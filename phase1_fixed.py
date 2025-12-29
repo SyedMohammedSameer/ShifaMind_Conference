@@ -194,10 +194,11 @@ class AdaptiveGatedCrossAttention(nn.Module):
         context = self.out_proj(context)
 
         # FIX: Compute relevance score (cosine similarity between text and concepts)
-        text_pooled = hidden_states.mean(dim=1, keepdim=True)  # [batch, 1, hidden]
-        concept_pooled = concepts_batch.mean(dim=1, keepdim=True)  # [batch, 1, hidden]
-        relevance = F.cosine_similarity(text_pooled, concept_pooled, dim=-1, keepdim=True)  # [batch, 1]
-        relevance = relevance.unsqueeze(1).expand(-1, seq_len, -1)  # [batch, seq, 1]
+        text_pooled = hidden_states.mean(dim=1)  # [batch, hidden]
+        concept_pooled = concepts_batch.mean(dim=1)  # [batch, hidden]
+        relevance = F.cosine_similarity(text_pooled, concept_pooled, dim=-1)  # [batch]
+        relevance = relevance.unsqueeze(-1).unsqueeze(-1)  # [batch, 1, 1]
+        relevance = relevance.expand(-1, seq_len, -1)  # [batch, seq, 1]
         relevance_features = relevance.expand(-1, -1, self.hidden_size)  # [batch, seq, hidden]
 
         # FIX: Gate based on text, context, AND relevance
