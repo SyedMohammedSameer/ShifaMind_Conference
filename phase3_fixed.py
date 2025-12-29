@@ -302,7 +302,7 @@ class ShifaMindPhase2Fixed(nn.Module):
         self.phase1_model = phase1_model
         self.rag_fusion = AdaptiveRAGFusion(hidden_size=phase1_model.hidden_size)
 
-    def forward(self, input_ids, attention_mask, concept_embeddings,
+    def forward(self, input_ids, attention_mask,
                 rag_input_ids=None, rag_attention_mask=None, relevance_score=None,
                 return_attention=False):
         """
@@ -311,7 +311,7 @@ class ShifaMindPhase2Fixed(nn.Module):
         """
         # Get Phase 1 outputs
         phase1_out = self.phase1_model(
-            input_ids, attention_mask, concept_embeddings,
+            input_ids, attention_mask,
             return_attention=return_attention
         )
 
