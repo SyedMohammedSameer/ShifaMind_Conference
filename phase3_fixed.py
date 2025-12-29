@@ -133,9 +133,8 @@ class AdaptiveGatedCrossAttention(nn.Module):
 
         # Adaptive gate network (content-dependent)
         self.gate_net = nn.Sequential(
-            nn.Linear(hidden_size * 3, hidden_size),  # text + context + relevance
+            nn.Linear(hidden_size * 3, hidden_size),
             nn.ReLU(),
-            nn.Dropout(dropout),
             nn.Linear(hidden_size, 1),
             nn.Sigmoid()
         )
@@ -176,10 +175,12 @@ class AdaptiveGatedCrossAttention(nn.Module):
         text_pooled = hidden_states.mean(dim=1)  # [batch, hidden]
         concept_pooled = concepts_batch.mean(dim=1)  # [batch, hidden]
         relevance = F.cosine_similarity(text_pooled, concept_pooled, dim=-1)  # [batch]
-        relevance = relevance.unsqueeze(-1).unsqueeze(-1).expand(-1, seq_len, -1)  # [batch, seq_len, 1]
+        relevance = relevance.unsqueeze(-1).unsqueeze(-1)  # [batch, 1, 1]
+        relevance = relevance.expand(-1, seq_len, -1)  # [batch, seq_len, 1]
+        relevance_features = relevance.expand(-1, -1, self.hidden_size)  # [batch, seq_len, hidden]
 
         # Learnable content-dependent gate
-        gate_input = torch.cat([hidden_states, context, relevance], dim=-1)  # [batch, seq_len, hidden*3]
+        gate_input = torch.cat([hidden_states, context, relevance_features], dim=-1)  # [batch, seq_len, hidden*3]
         gate_values = self.gate_net(gate_input)  # [batch, seq_len, 1]
 
         # Apply gating
@@ -194,29 +195,25 @@ class AdaptiveGatedCrossAttention(nn.Module):
 
 class ShifaMindPhase1Fixed(nn.Module):
     """
-    Fixed Phase 1 with learnable cross-attention
+    Fixed Phase 1 with learnable cross-attention (matches Phase 2 architecture)
     """
-    def __init__(self, base_model, num_concepts, num_classes, fusion_layers=[9, 11]):
+    def __init__(self, base_model, concept_embeddings_init, num_classes, fusion_layers=[9, 11]):
         super().__init__()
         self.base_model = base_model
         self.hidden_size = base_model.config.hidden_size
-        self.fusion_layers = fusion_layers
-        self.num_concepts = num_concepts
+        self.concept_embeddings = nn.Parameter(concept_embeddings_init.clone())
+        self.num_concepts = concept_embeddings_init.shape[0]
 
-        # Adaptive fusion modules at specific layers
         self.fusion_modules = nn.ModuleDict({
             str(layer): AdaptiveGatedCrossAttention(self.hidden_size, layer_idx=layer)
             for layer in fusion_layers
         })
 
-        # Heads
         self.diagnosis_head = nn.Linear(self.hidden_size, num_classes)
-        self.concept_head = nn.Linear(self.hidden_size, num_concepts)
-        self.diagnosis_concept_interaction = nn.Bilinear(num_classes, num_concepts, num_concepts)
-
+        self.concept_head = nn.Linear(self.hidden_size, self.num_concepts)
         self.dropout = nn.Dropout(0.1)
 
-    def forward(self, input_ids, attention_mask, concept_embeddings, return_attention=False):
+    def forward(self, input_ids, attention_mask, return_attention=False):
         # Base BERT encoding
         outputs = self.base_model(
             input_ids=input_ids,
@@ -230,11 +227,11 @@ class ShifaMindPhase1Fixed(nn.Module):
 
         # Apply fusion at specified layers
         fusion_attentions = {}
-        for layer_idx in self.fusion_layers:
+        for layer_idx in [9, 11]:
             if str(layer_idx) in self.fusion_modules:
                 layer_hidden = hidden_states[layer_idx]
                 fused_hidden, attn_weights = self.fusion_modules[str(layer_idx)](
-                    layer_hidden, concept_embeddings, attention_mask
+                    layer_hidden, self.concept_embeddings, attention_mask
                 )
                 current_hidden = fused_hidden
                 if return_attention:
@@ -245,14 +242,9 @@ class ShifaMindPhase1Fixed(nn.Module):
         diagnosis_logits = self.diagnosis_head(cls_hidden)
         concept_logits = self.concept_head(cls_hidden)
 
-        # Refined concept scores with diagnosis interaction
-        refined_concept_logits = self.diagnosis_concept_interaction(
-            torch.sigmoid(diagnosis_logits), torch.sigmoid(concept_logits)
-        )
-
         result = {
             'logits': diagnosis_logits,
-            'concept_scores': refined_concept_logits,
+            'concept_scores': concept_logits,
             'cls_hidden': cls_hidden,
             'hidden_states': current_hidden
         }
@@ -397,7 +389,7 @@ print(f"Concept embeddings: {concept_embeddings.shape}")
 base_model = AutoModel.from_pretrained("emilyalsentzer/Bio_ClinicalBERT").to(device)
 phase1_model = ShifaMindPhase1Fixed(
     base_model=base_model,
-    num_concepts=num_concepts,
+    concept_embeddings_init=concept_embeddings,
     num_classes=len(TARGET_CODES),
     fusion_layers=[9, 11]
 ).to(device)
@@ -475,7 +467,7 @@ def compute_keyword_attention(model, test_loader, concept_embeddings, tokenizer,
             labels = batch['labels'].cpu().numpy()
             texts = batch['text']
 
-            outputs = model(input_ids, attention_mask, concept_embeddings, return_attention=True)
+            outputs = model(input_ids, attention_mask, return_attention=True)
 
             if 'fusion_attentions' in outputs:
                 # Use fusion attention from layer 11 (most semantic)
@@ -543,7 +535,7 @@ def compute_clinical_validity(model, test_loader, concept_embeddings, device):
             attention_mask = batch['attention_mask'].to(device)
             concept_labels = batch['concept_labels'].cpu().numpy()
 
-            outputs = model(input_ids, attention_mask, concept_embeddings)
+            outputs = model(input_ids, attention_mask)
             concept_preds = (torch.sigmoid(outputs['concept_scores']) > 0.5).cpu().numpy().astype(int)
 
             all_concept_preds.append(concept_preds)
@@ -603,7 +595,7 @@ def compute_comprehensiveness(model, test_loader, concept_embeddings, device, to
             labels = batch['labels'].to(device)
 
             # Full prediction with attention
-            outputs_full = model(input_ids, attention_mask, concept_embeddings, return_attention=True)
+            outputs_full = model(input_ids, attention_mask, return_attention=True)
             preds_full = torch.sigmoid(outputs_full['logits']).cpu().numpy()
 
             # Get top-k attended tokens
@@ -623,7 +615,7 @@ def compute_comprehensiveness(model, test_loader, concept_embeddings, device, to
                         modified_mask[b, topk_indices[b]] = 0
 
                     # Predict with evidence removed
-                    outputs_removed = model(input_ids, modified_mask, concept_embeddings)
+                    outputs_removed = model(input_ids, modified_mask)
                     preds_removed = torch.sigmoid(outputs_removed['logits']).cpu().numpy()
                 else:
                     preds_removed = preds_full
@@ -675,7 +667,7 @@ def compute_sufficiency(model, test_loader, concept_embeddings, device, top_k_to
             labels = batch['labels'].to(device)
 
             # Full prediction
-            outputs_full = model(input_ids, attention_mask, concept_embeddings, return_attention=True)
+            outputs_full = model(input_ids, attention_mask, return_attention=True)
             preds_full = torch.sigmoid(outputs_full['logits']).cpu().numpy()
 
             # Keep only top-k attended tokens
@@ -693,7 +685,7 @@ def compute_sufficiency(model, test_loader, concept_embeddings, device, top_k_to
                         modified_mask[b, 0] = 1  # Keep [CLS]
 
                     # Predict with only evidence
-                    outputs_only = model(input_ids, modified_mask, concept_embeddings)
+                    outputs_only = model(input_ids, modified_mask)
                     preds_only = torch.sigmoid(outputs_only['logits']).cpu().numpy()
                 else:
                     preds_only = preds_full
@@ -757,7 +749,7 @@ def compute_concept_association(model, test_loader, concept_embeddings, device):
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].cpu().numpy()
 
-            outputs = model(input_ids, attention_mask, concept_embeddings)
+            outputs = model(input_ids, attention_mask)
             concept_probs = torch.sigmoid(outputs['concept_scores']).cpu().numpy()
 
             # Group by diagnosis
