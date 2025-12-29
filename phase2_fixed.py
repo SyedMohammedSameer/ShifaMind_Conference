@@ -190,11 +190,11 @@ for code in TARGET_CODES:
     if len(cases) > 0:
         cases['text_length'] = cases['text'].apply(lambda x: len(str(x)))
         cases_sorted = cases.sort_values('text_length', ascending=False)
-        sampled = cases_sorted.head(10)
+        sampled = cases_sorted.head(25)
 
         for idx, row in sampled.iterrows():
             text = str(row['text'])
-            snippet = text[:500].strip()
+            snippet = text[:800].strip()
             corpus_documents.append(f"Clinical case {ICD_DESCRIPTIONS[code]}: {snippet}")
             corpus_metadata.append({
                 'type': 'case_prototype',
@@ -314,7 +314,7 @@ class DiagnosisAwareRAG:
 
         return retrieved_text, avg_relevance
 
-rag_system = DiagnosisAwareRAG(retriever, diagnosis_indices, diagnosis_documents, top_k=5, threshold=0.6)
+rag_system = DiagnosisAwareRAG(retriever, diagnosis_indices, diagnosis_documents, top_k=8, threshold=0.2)
 
 # ============================================================================
 # LOAD PHASE 1 MODEL (INLINE ARCHITECTURE)
