@@ -86,7 +86,7 @@ OUTPUT_BASE = BASE_PATH / '07_ShifaMind'
 # Input paths
 SHARED_DATA_PATH = OUTPUT_BASE / 'shared_data'
 PHASE1_FIXED_CHECKPOINT = OUTPUT_BASE / 'checkpoints/phase1_fixed/phase1_fixed_final.pt'
-PHASE2_FIXED_CHECKPOINT = OUTPUT_BASE / 'checkpoints/phase2_fixed/phase2_fixed_final.pt'
+PHASE2_FIXED_CHECKPOINT = OUTPUT_BASE / 'checkpoints/phase2_fixed/phase2_fixed_best.pt'
 
 # Output paths
 CHECKPOINT_PATH = OUTPUT_BASE / 'checkpoints/phase4_fixed'

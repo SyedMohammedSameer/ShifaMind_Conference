@@ -773,16 +773,6 @@ with open(RESULTS_PATH / 'phase2_fixed_results.json', 'w') as f:
 print(f"\n💾 Results: {RESULTS_PATH}")
 print(f"💾 Checkpoint: {checkpoint_file}")
 
-# Save final checkpoint for Phase 3 to load
-final_checkpoint = CHECKPOINT_PATH / 'phase2_fixed_final.pt'
-torch.save({
-    'model_state_dict': phase2_model.state_dict(),
-    'macro_f1': macro_f1,
-    'concept_embeddings': phase2_model.phase1_model.concept_embeddings.data.cpu(),
-    'num_concepts': num_concepts
-}, final_checkpoint)
-print(f"💾 Final checkpoint: {final_checkpoint}")
-
 print("\n" + "="*80)
 print("✅ PHASE 2 FIXED COMPLETE!")
 print("="*80)
