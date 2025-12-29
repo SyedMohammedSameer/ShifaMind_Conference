@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ================================================================================
-SHIFAMIND PHASE 4 FIXED: Ablations & Baselines
+SHIFAMIND PHASE 4: Ablation Studies
 ================================================================================
 Author: Mohammed Sameer Syed
 University of Arizona - MS in AI Capstone
@@ -15,24 +15,19 @@ Ablations (5):
 4. Early Layers [2, 3, 4]
 5. BERT + Concept Head (no fusion)
 
-Baselines (3):
-1. BioClinicalBERT (vanilla fine-tuned)
-2. PubMedBERT
-3. BlueBERT
-
 Loads:
 - Train/val/test splits from Phase 1
 - Phase 1 Fixed & Phase 2 Fixed checkpoints
 
 Saves:
-- Comparison results to 07_ShifaMind/results/phase4_fixed/
+- Ablation results to 07_ShifaMind/results/phase4_fixed/
 
-TARGET: Prove Phase 2 Fixed beats all baselines and ablations
+TARGET: Show that our architecture choices matter
 ================================================================================
 """
 
 print("="*80)
-print("🚀 SHIFAMIND PHASE 4 FIXED - ABLATIONS & BASELINES")
+print("🚀 SHIFAMIND PHASE 4 - ABLATION STUDIES")
 print("="*80)
 
 # ============================================================================
@@ -520,111 +515,6 @@ ablation_results['no_fusion']['fusion_layers'] = []
 del model_no_fusion, model_no_fusion_wrapper, base_model_no_fusion
 torch.cuda.empty_cache()
 
-# ============================================================================
-# BASELINES
-# ============================================================================
-
-print("\n" + "="*80)
-print("📊 BASELINE COMPARISONS")
-print("="*80)
-
-baseline_results = {}
-
-class VanillaClassifier(nn.Module):
-    def __init__(self, base_model, num_classes):
-        super().__init__()
-        self.base_model = base_model
-        self.dropout = nn.Dropout(0.1)
-        self.classifier = nn.Linear(base_model.config.hidden_size, num_classes)
-
-    def forward(self, input_ids, attention_mask):
-        outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask)
-        cls_hidden = self.dropout(outputs.last_hidden_state[:, 0, :])
-        logits = self.classifier(cls_hidden)
-        return {'logits': logits}
-
-# BASELINE 1: BioClinicalBERT (vanilla)
-print("\n1️⃣  BioClinicalBERT (vanilla fine-tuned)")
-tokenizer_bio = AutoTokenizer.from_pretrained("emilyalsentzer/Bio_ClinicalBERT")
-base_model_bio = AutoModel.from_pretrained("emilyalsentzer/Bio_ClinicalBERT").to(device)
-model_vanilla = VanillaClassifier(base_model_bio, len(TARGET_CODES)).to(device)
-
-train_dataset_bio = SimpleDataset(df_train['text'].tolist(), df_train['labels'].tolist(), tokenizer_bio)
-val_dataset_bio = SimpleDataset(df_val['text'].tolist(), df_val['labels'].tolist(), tokenizer_bio)
-test_dataset_bio = SimpleDataset(df_test['text'].tolist(), df_test['labels'].tolist(), tokenizer_bio)
-
-train_loader_bio = DataLoader(train_dataset_bio, batch_size=8, shuffle=True)
-val_loader_bio = DataLoader(val_dataset_bio, batch_size=16)
-test_loader_bio = DataLoader(test_dataset_bio, batch_size=16)
-
-baseline_results['bio_clinical_bert'] = train_and_evaluate(
-    model_vanilla, train_loader_bio, val_loader_bio, test_loader_bio,
-    "BioClinicalBERT (vanilla)", num_epochs=3
-)
-baseline_results['bio_clinical_bert']['description'] = 'Vanilla BioClinicalBERT fine-tuned'
-
-del model_vanilla, base_model_bio, tokenizer_bio
-del train_dataset_bio, val_dataset_bio, test_dataset_bio
-del train_loader_bio, val_loader_bio, test_loader_bio
-torch.cuda.empty_cache()
-
-# BASELINE 2: PubMedBERT
-print("\n2️⃣  PubMedBERT")
-try:
-    tokenizer_pubmed = AutoTokenizer.from_pretrained("microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext")
-    base_model_pubmed = AutoModel.from_pretrained("microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext").to(device)
-    model_pubmed = VanillaClassifier(base_model_pubmed, len(TARGET_CODES)).to(device)
-
-    train_dataset_pubmed = SimpleDataset(df_train['text'].tolist(), df_train['labels'].tolist(), tokenizer_pubmed)
-    val_dataset_pubmed = SimpleDataset(df_val['text'].tolist(), df_val['labels'].tolist(), tokenizer_pubmed)
-    test_dataset_pubmed = SimpleDataset(df_test['text'].tolist(), df_test['labels'].tolist(), tokenizer_pubmed)
-
-    train_loader_pubmed = DataLoader(train_dataset_pubmed, batch_size=8, shuffle=True)
-    val_loader_pubmed = DataLoader(val_dataset_pubmed, batch_size=16)
-    test_loader_pubmed = DataLoader(test_dataset_pubmed, batch_size=16)
-
-    baseline_results['pubmed_bert'] = train_and_evaluate(
-        model_pubmed, train_loader_pubmed, val_loader_pubmed, test_loader_pubmed,
-        "PubMedBERT", num_epochs=3
-    )
-    baseline_results['pubmed_bert']['description'] = 'PubMedBERT fine-tuned'
-
-    del model_pubmed, base_model_pubmed, tokenizer_pubmed
-    del train_dataset_pubmed, val_dataset_pubmed, test_dataset_pubmed
-    del train_loader_pubmed, val_loader_pubmed, test_loader_pubmed
-    torch.cuda.empty_cache()
-except Exception as e:
-    print(f"   ⚠️  Skipping PubMedBERT: {str(e)}")
-    baseline_results['pubmed_bert'] = {'macro_f1': 0.0, 'description': 'Failed to load', 'error': str(e)}
-
-# BASELINE 3: BlueBERT
-print("\n3️⃣  BlueBERT")
-try:
-    tokenizer_blue = AutoTokenizer.from_pretrained("bionlp/bluebert_pubmed_mimic_uncased_L-12_H-768_A-12")
-    base_model_blue = AutoModel.from_pretrained("bionlp/bluebert_pubmed_mimic_uncased_L-12_H-768_A-12").to(device)
-    model_blue = VanillaClassifier(base_model_blue, len(TARGET_CODES)).to(device)
-
-    train_dataset_blue = SimpleDataset(df_train['text'].tolist(), df_train['labels'].tolist(), tokenizer_blue)
-    val_dataset_blue = SimpleDataset(df_val['text'].tolist(), df_val['labels'].tolist(), tokenizer_blue)
-    test_dataset_blue = SimpleDataset(df_test['text'].tolist(), df_test['labels'].tolist(), tokenizer_blue)
-
-    train_loader_blue = DataLoader(train_dataset_blue, batch_size=8, shuffle=True)
-    val_loader_blue = DataLoader(val_dataset_blue, batch_size=16)
-    test_loader_blue = DataLoader(test_dataset_blue, batch_size=16)
-
-    baseline_results['blue_bert'] = train_and_evaluate(
-        model_blue, train_loader_blue, val_loader_blue, test_loader_blue,
-        "BlueBERT", num_epochs=3
-    )
-    baseline_results['blue_bert']['description'] = 'BlueBERT (PubMed+MIMIC) fine-tuned'
-
-    del model_blue, base_model_blue, tokenizer_blue
-    del train_dataset_blue, val_dataset_blue, test_dataset_blue
-    del train_loader_blue, val_loader_blue, test_loader_blue
-    torch.cuda.empty_cache()
-except Exception as e:
-    print(f"   ⚠️  Skipping BlueBERT: {str(e)}")
-    baseline_results['blue_bert'] = {'macro_f1': 0.0, 'description': 'Failed to load', 'error': str(e)}
 
 # ============================================================================
 # SAVE RESULTS
@@ -634,80 +524,56 @@ print("\n" + "="*80)
 print("💾 SAVING RESULTS")
 print("="*80)
 
-# Combine all results
-all_results = {
-    'phase': 'Phase 4 Fixed - Ablations & Baselines',
+ablation_results_summary = {
+    'phase': 'Phase 4 - Ablation Studies',
     'ablations': ablation_results,
-    'baselines': baseline_results,
-    'comparison_summary': {
+    'summary': {
         'full_model_f1': ablation_results['full_model']['macro_f1'],
         'no_rag_f1': ablation_results['no_rag']['macro_f1'],
-        'best_ablation_f1': max([v['macro_f1'] for v in ablation_results.values()]),
-        'best_baseline_f1': max([v.get('macro_f1', 0) for v in baseline_results.values()])
+        'best_ablation_f1': max([v['macro_f1'] for v in ablation_results.values()])
     }
 }
 
-with open(RESULTS_PATH / 'ablations_baselines.json', 'w') as f:
-    json.dump(all_results, f, indent=2)
+with open(RESULTS_PATH / 'ablation_results.json', 'w') as f:
+    json.dump(ablation_results_summary, f, indent=2)
 
-print(f"✅ Saved: {RESULTS_PATH / 'ablations_baselines.json'}")
+print(f"✅ Saved: {RESULTS_PATH / 'ablation_results.json'}")
 
-# Create comparison table
-comparison_data = []
-
-# Add ablations
+# Create ablation comparison table
+ablation_data = []
 for name, results in ablation_results.items():
-    comparison_data.append({
+    ablation_data.append({
         'Model': name.replace('_', ' ').title(),
-        'Type': 'Ablation',
         'Macro F1': f"{results['macro_f1']:.4f}",
-        'Description': results.get('description', '')
+        'Description': results.get('description', ''),
+        'Fusion Layers': str(results.get('fusion_layers', 'N/A'))
     })
 
-# Add baselines
-for name, results in baseline_results.items():
-    comparison_data.append({
-        'Model': name.replace('_', ' ').title(),
-        'Type': 'Baseline',
-        'Macro F1': f"{results.get('macro_f1', 0):.4f}",
-        'Description': results.get('description', '')
-    })
+ablation_df = pd.DataFrame(ablation_data)
+ablation_df = ablation_df.sort_values('Macro F1', ascending=False)
+ablation_df.to_csv(RESULTS_PATH / 'ablation_table.csv', index=False)
 
-comparison_df = pd.DataFrame(comparison_data)
-comparison_df = comparison_df.sort_values('Macro F1', ascending=False)
-comparison_df.to_csv(RESULTS_PATH / 'comparison_table.csv', index=False)
-
-print(f"✅ Saved: {RESULTS_PATH / 'comparison_table.csv'}")
+print(f"✅ Saved: {RESULTS_PATH / 'ablation_table.csv'}")
 
 # ============================================================================
 # FINAL SUMMARY
 # ============================================================================
 
 print("\n" + "="*80)
-print("🎉 PHASE 4 FIXED COMPLETE - ABLATIONS & BASELINES")
+print("🎉 PHASE 4 COMPLETE - ABLATION STUDIES")
 print("="*80)
 
 print("\n📊 Ablation Results:")
 for name, results in ablation_results.items():
     print(f"   {name.replace('_', ' ').title():30s}: F1 = {results['macro_f1']:.4f}")
 
-print("\n📊 Baseline Results:")
-for name, results in baseline_results.items():
-    print(f"   {name.replace('_', ' ').title():30s}: F1 = {results.get('macro_f1', 0):.4f}")
-
-print(f"\n🏆 Best Model: Full Model (Phase 2 Fixed + RAG)")
+print(f"\n🏆 Best Configuration: Full Model (Phase 2 Fixed + RAG)")
 print(f"   F1: {ablation_results['full_model']['macro_f1']:.4f}")
-
-print(f"\n📈 Improvement Over Best Baseline:")
-best_baseline_f1 = max([v.get('macro_f1', 0) for v in baseline_results.values()])
-if best_baseline_f1 > 0:
-    improvement = ablation_results['full_model']['macro_f1'] - best_baseline_f1
-    print(f"   Δ: {improvement:+.4f} ({improvement/best_baseline_f1*100:+.1f}%)")
 
 print(f"\n📈 RAG Contribution:")
 rag_contribution = ablation_results['full_model']['macro_f1'] - ablation_results['no_rag']['macro_f1']
 print(f"   Phase 2 Fixed vs Phase 1 Fixed: {rag_contribution:+.4f}")
 
 print(f"\n💾 Results: {RESULTS_PATH}")
-print("\n✅ ALL PHASES COMPLETE!")
+print("\n🚀 Ready for Phase 5 (Baseline Comparisons)")
 print(f"\nAlhamdulillah! 🤲")
