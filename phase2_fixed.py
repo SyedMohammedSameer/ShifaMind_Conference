@@ -3,17 +3,7 @@
 ================================================================================
 SHIFAMIND PHASE 2 FIXED: Diagnosis-Aware RAG
 ================================================================================
-Author: Mohammed Sameer Syed (Fixed Version)
-University of Arizona - MS in AI Capstone
-
-CRITICAL FIXES:
-1. ✅ Diagnosis-aware RAG (retrieve based on predicted diagnosis)
-2. ✅ Relevance scoring for retrieved documents
-3. ✅ Adaptive RAG gate (learns when RAG helps)
-4. ✅ Better corpus (more clinical knowledge, filtered prototypes)
-5. ✅ Two-stage retrieval (coarse-to-fine)
-
-Expected F1: >0.80 (beating Phase 1 Fixed)
+Complete self-contained script for Colab (copy-paste ready)
 ================================================================================
 """
 
@@ -48,7 +38,7 @@ except:
     print("✅ sentence-transformers installed")
 
 # ============================================================================
-# IMPORTS & SETUP
+# IMPORTS
 # ============================================================================
 
 import torch
@@ -130,14 +120,13 @@ print(f"   Val:   {len(df_val):,}")
 print(f"   Test:  {len(df_test):,}")
 
 # ============================================================================
-# FIX 4: BUILD ENHANCED CLINICAL KNOWLEDGE CORPUS
+# BUILD ENHANCED CLINICAL KNOWLEDGE CORPUS
 # ============================================================================
 
 print("\n" + "="*80)
 print("📚 BUILDING ENHANCED CORPUS")
 print("="*80)
 
-# FIX: More comprehensive clinical knowledge per diagnosis
 enhanced_clinical_knowledge = {
     'J189': [
         'Pneumonia diagnosis requires fever, cough, dyspnea, and pulmonary infiltrate on imaging',
@@ -192,28 +181,26 @@ for code, knowledge_list in enhanced_clinical_knowledge.items():
             'type': 'clinical_knowledge',
             'icd_code': code,
             'source': f'Clinical-{code}',
-            'relevance': 1.0  # High relevance
+            'relevance': 1.0
         })
 
-# FIX: Select only BEST case prototypes (highest quality notes)
 print("Adding high-quality case prototypes...")
 for code in TARGET_CODES:
     cases = df_train[df_train['icd_codes'].apply(lambda x: code in x)]
     if len(cases) > 0:
-        # Select longer, more detailed notes
         cases['text_length'] = cases['text'].apply(lambda x: len(str(x)))
         cases_sorted = cases.sort_values('text_length', ascending=False)
-        sampled = cases_sorted.head(10)  # Only top 10 most detailed
+        sampled = cases_sorted.head(10)
 
         for idx, row in sampled.iterrows():
             text = str(row['text'])
-            snippet = text[:500].strip()  # Longer snippets
+            snippet = text[:500].strip()
             corpus_documents.append(f"Clinical case {ICD_DESCRIPTIONS[code]}: {snippet}")
             corpus_metadata.append({
                 'type': 'case_prototype',
                 'icd_code': code,
                 'source': f'MIMIC-{code}',
-                'relevance': 0.8  # Medium relevance
+                'relevance': 0.8
             })
 
 print(f"\n✅ Enhanced corpus: {len(corpus_documents)} documents")
@@ -234,7 +221,7 @@ with open(corpus_file, 'w') as f:
 print(f"\n💾 Saved: {corpus_file}")
 
 # ============================================================================
-# BUILD RETRIEVER & DIAGNOSIS-SPECIFIC INDICES
+# BUILD DIAGNOSIS-SPECIFIC RETRIEVER
 # ============================================================================
 
 print("\n" + "="*80)
@@ -250,7 +237,6 @@ corpus_embeddings = retriever.encode(
     convert_to_numpy=True, normalize_embeddings=True
 ).astype(np.float32)
 
-# FIX 1: Create separate FAISS indices per diagnosis
 print("\nBuilding diagnosis-specific indices...")
 embedding_dim = corpus_embeddings.shape[1]
 
@@ -258,12 +244,10 @@ diagnosis_indices = {}
 diagnosis_documents = {}
 
 for code in TARGET_CODES:
-    # Get documents for this diagnosis
     code_indices = [i for i, m in enumerate(corpus_metadata) if m['icd_code'] == code]
     code_docs = [corpus_documents[i] for i in code_indices]
     code_embeds = corpus_embeddings[code_indices]
 
-    # Build FAISS index for this diagnosis
     index = faiss.IndexFlatIP(embedding_dim)
     faiss.normalize_L2(code_embeds)
     index.add(code_embeds)
@@ -276,7 +260,7 @@ for code in TARGET_CODES:
 print(f"✅ Built {len(diagnosis_indices)} diagnosis-specific indices")
 
 # ============================================================================
-# FIX 1 & 2: DIAGNOSIS-AWARE RAG WITH RELEVANCE SCORING
+# DIAGNOSIS-AWARE RAG SYSTEM
 # ============================================================================
 
 print("\n" + "="*80)
@@ -284,9 +268,7 @@ print("🧠 DIAGNOSIS-AWARE RAG SYSTEM")
 print("="*80)
 
 class DiagnosisAwareRAG:
-    """FIX 1 & 2: Retrieve based on predicted diagnosis with relevance scoring"""
-    def __init__(self, retriever, diagnosis_indices, diagnosis_documents,
-                 top_k=5, threshold=0.6):
+    def __init__(self, retriever, diagnosis_indices, diagnosis_documents, top_k=5, threshold=0.6):
         self.retriever = retriever
         self.diagnosis_indices = diagnosis_indices
         self.diagnosis_documents = diagnosis_documents
@@ -294,11 +276,7 @@ class DiagnosisAwareRAG:
         self.threshold = threshold
         print(f"✅ Diagnosis-Aware RAG: top-{top_k}, threshold={threshold}")
 
-    def retrieve(self, query: str, predicted_diagnosis: str = None) -> tuple:
-        """
-        Retrieve relevant knowledge based on predicted diagnosis
-        Returns: (retrieved_text, relevance_score)
-        """
+    def retrieve(self, query: str, predicted_diagnosis: str = None):
         query = query[:1000]
         query_embedding = self.retriever.encode(
             [query], convert_to_numpy=True, normalize_embeddings=True,
@@ -306,17 +284,14 @@ class DiagnosisAwareRAG:
         ).astype(np.float32)
         faiss.normalize_L2(query_embedding)
 
-        # FIX 1: If diagnosis is predicted, use diagnosis-specific index
         if predicted_diagnosis and predicted_diagnosis in self.diagnosis_indices:
             index = self.diagnosis_indices[predicted_diagnosis]
             documents = self.diagnosis_documents[predicted_diagnosis]
         else:
-            # Fallback: search all documents (for initial retrieval)
             all_docs = []
             for docs in self.diagnosis_documents.values():
                 all_docs.extend(docs)
             documents = all_docs
-            # Create temporary index
             all_embeds = self.retriever.encode(
                 documents, convert_to_numpy=True, normalize_embeddings=True,
                 show_progress_bar=False
@@ -327,7 +302,6 @@ class DiagnosisAwareRAG:
 
         scores, indices = index.search(query_embedding, k=self.top_k)
 
-        # FIX 2: Filter by threshold and compute relevance
         filtered = []
         relevance_scores = []
         for score, idx in zip(scores[0], indices[0]):
@@ -340,30 +314,73 @@ class DiagnosisAwareRAG:
 
         return retrieved_text, avg_relevance
 
-rag_system = DiagnosisAwareRAG(
-    retriever, diagnosis_indices, diagnosis_documents,
-    top_k=5, threshold=0.6
-)
+rag_system = DiagnosisAwareRAG(retriever, diagnosis_indices, diagnosis_documents, top_k=5, threshold=0.6)
 
 # ============================================================================
-# LOAD PHASE 1 FIXED MODEL
+# LOAD PHASE 1 MODEL (INLINE ARCHITECTURE)
 # ============================================================================
 
 print("\n" + "="*80)
 print("📥 LOADING PHASE 1 FIXED MODEL")
 print("="*80)
 
-# Load architecture from Phase 1 Fixed
-exec(open('phase1_fixed.py').read().split('# ============================================================================\n# LOAD SAVED SPLITS')[0].split('# ============================================================================\n# FIXED ARCHITECTURE')[1])
+# Define architecture inline (no imports)
+class AdaptiveGatedCrossAttention(nn.Module):
+    def __init__(self, hidden_size, num_heads=8, dropout=0.1, layer_idx=1):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
 
-tokenizer = AutoTokenizer.from_pretrained("emilyalsentzer/Bio_ClinicalBERT")
-checkpoint = torch.load(PHASE1_CHECKPOINT, map_location=device)
-concept_embeddings = checkpoint['concept_embeddings'].to(device)
-num_concepts = concept_embeddings.shape[0]
+        self.query = nn.Linear(hidden_size, hidden_size)
+        self.key = nn.Linear(hidden_size, hidden_size)
+        self.value = nn.Linear(hidden_size, hidden_size)
 
-base_model = AutoModel.from_pretrained("emilyalsentzer/Bio_ClinicalBERT").to(device)
+        self.gate_net = nn.Sequential(
+            nn.Linear(hidden_size * 3, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, 1),
+            nn.Sigmoid()
+        )
 
-# Recreate Phase 1 Fixed model class (simplified for loading)
+        self.out_proj = nn.Linear(hidden_size, hidden_size)
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(hidden_size)
+
+    def forward(self, hidden_states, concept_embeddings, attention_mask=None):
+        batch_size, seq_len, _ = hidden_states.shape
+        num_concepts = concept_embeddings.shape[0]
+
+        concepts_batch = concept_embeddings.unsqueeze(0).expand(batch_size, -1, -1)
+
+        Q = self.query(hidden_states).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        K = self.key(concepts_batch).view(batch_size, num_concepts, self.num_heads, self.head_dim).transpose(1, 2)
+        V = self.value(concepts_batch).view(batch_size, num_concepts, self.num_heads, self.head_dim).transpose(1, 2)
+
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+
+        context = torch.matmul(attn_weights, V)
+        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
+        context = self.out_proj(context)
+
+        # Compute relevance
+        text_pooled = hidden_states.mean(dim=1)
+        concept_pooled = concepts_batch.mean(dim=1)
+        relevance = F.cosine_similarity(text_pooled, concept_pooled, dim=-1)
+        relevance = relevance.unsqueeze(-1).unsqueeze(-1)
+        relevance = relevance.expand(-1, seq_len, -1)
+        relevance_features = relevance.expand(-1, -1, self.hidden_size)
+
+        gate_input = torch.cat([hidden_states, context, relevance_features], dim=-1)
+        gate_values = self.gate_net(gate_input)
+
+        output = hidden_states + gate_values * context
+        output = self.layer_norm(output)
+
+        return output, attn_weights.mean(dim=1), gate_values.mean()
+
 class ShifaMindPhase1Fixed(nn.Module):
     def __init__(self, base_model, concept_embeddings_init, num_classes, fusion_layers=[9, 11]):
         super().__init__()
@@ -372,7 +389,6 @@ class ShifaMindPhase1Fixed(nn.Module):
         self.concept_embeddings = nn.Parameter(concept_embeddings_init.clone())
         self.num_concepts = concept_embeddings_init.shape[0]
 
-        from phase1_fixed import AdaptiveGatedCrossAttention
         self.fusion_modules = nn.ModuleDict({
             str(layer): AdaptiveGatedCrossAttention(self.hidden_size, layer_idx=layer)
             for layer in fusion_layers
@@ -404,6 +420,12 @@ class ShifaMindPhase1Fixed(nn.Module):
 
         return {'logits': diagnosis_logits, 'cls_hidden': cls_hidden}
 
+tokenizer = AutoTokenizer.from_pretrained("emilyalsentzer/Bio_ClinicalBERT")
+checkpoint = torch.load(PHASE1_CHECKPOINT, map_location=device)
+concept_embeddings = checkpoint['concept_embeddings'].to(device)
+
+base_model = AutoModel.from_pretrained("emilyalsentzer/Bio_ClinicalBERT").to(device)
+
 phase1_model = ShifaMindPhase1Fixed(
     base_model, concept_embeddings, len(TARGET_CODES), fusion_layers=[9, 11]
 ).to(device)
@@ -412,7 +434,7 @@ phase1_model.load_state_dict(checkpoint['model_state_dict'])
 print(f"✅ Phase 1 Fixed loaded (F1: {checkpoint.get('macro_f1', 0):.4f})")
 
 # ============================================================================
-# FIX 3: ADAPTIVE RAG FUSION
+# ADAPTIVE RAG FUSION
 # ============================================================================
 
 print("\n" + "="*80)
@@ -420,12 +442,10 @@ print("🏗️  ADAPTIVE RAG FUSION")
 print("="*80)
 
 class AdaptiveRAGFusion(nn.Module):
-    """FIX 3: Gate learns when RAG helps based on relevance"""
     def __init__(self, hidden_size=768):
         super().__init__()
-        # Gate depends on text, RAG, AND relevance score
         self.gate_net = nn.Sequential(
-            nn.Linear(hidden_size * 2 + 1, hidden_size),  # +1 for relevance
+            nn.Linear(hidden_size * 2 + 1, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, 1),
             nn.Sigmoid()
@@ -435,26 +455,14 @@ class AdaptiveRAGFusion(nn.Module):
         print("   🔧 Adaptive gate (learns when RAG helps)")
 
     def forward(self, text_cls, rag_cls, relevance_score):
-        """
-        Args:
-            text_cls: [batch, hidden]
-            rag_cls: [batch, hidden]
-            relevance_score: [batch, 1] - how relevant is retrieved doc
-        """
         rag_projected = self.rag_proj(rag_cls)
-
-        # Gate depends on text, RAG quality, and relevance
         gate_input = torch.cat([text_cls, rag_projected, relevance_score], dim=-1)
-        gate = self.gate_net(gate_input)  # [batch, 1]
-
-        # Adaptive fusion
+        gate = self.gate_net(gate_input)
         fused = (1 - gate) * text_cls + gate * rag_projected
         fused = self.layer_norm(fused)
-
         return fused, gate
 
 class ShifaMindPhase2Fixed(nn.Module):
-    """Phase 2 with Diagnosis-Aware RAG"""
     def __init__(self, phase1_model, tokenizer, rag_system):
         super().__init__()
         self.phase1_model = phase1_model
@@ -466,13 +474,11 @@ class ShifaMindPhase2Fixed(nn.Module):
         batch_size = input_ids.shape[0]
         device = input_ids.device
 
-        # Get text CLS
         text_outputs = self.phase1_model.base_model(
             input_ids=input_ids, attention_mask=attention_mask, return_dict=True
         )
         text_cls = text_outputs.last_hidden_state[:, 0, :]
 
-        # Get RAG CLS
         rag_cls_list = []
         for rag_text in rag_texts:
             if rag_text and len(rag_text) > 10:
@@ -491,24 +497,18 @@ class ShifaMindPhase2Fixed(nn.Module):
                 rag_cls_list.append(torch.zeros_like(text_cls[0:1]))
 
         rag_cls = torch.cat(rag_cls_list, dim=0)
-
-        # Adaptive fusion with relevance
         relevance_tensor = torch.FloatTensor(relevance_scores).unsqueeze(-1).to(device)
         fused_cls, gate = self.rag_fusion(text_cls, rag_cls, relevance_tensor)
 
-        # Predict
         diagnosis_logits = self.phase1_model.diagnosis_head(fused_cls)
 
-        return {
-            'logits': diagnosis_logits,
-            'rag_gate': gate.mean()
-        }
+        return {'logits': diagnosis_logits, 'rag_gate': gate.mean()}
 
 phase2_model = ShifaMindPhase2Fixed(phase1_model, tokenizer, rag_system).to(device)
 print(f"✅ Phase 2 Fixed built ({sum(p.numel() for p in phase2_model.parameters()):,} params)")
 
 # ============================================================================
-# DATASET WITH DIAGNOSIS-AWARE RAG
+# DATASET
 # ============================================================================
 
 print("\n" + "="*80)
@@ -526,14 +526,12 @@ class DiagnosisAwareRAGDataset(Dataset):
 
         print("Pre-retrieving with diagnosis awareness...")
         for i, (text, label) in enumerate(tqdm(zip(texts, labels), total=len(texts), desc="RAG")):
-            # Get predicted diagnosis (use ground truth for training efficiency)
             predicted_dx = None
             for j, code in enumerate(target_codes):
                 if label[j] == 1:
                     predicted_dx = code
                     break
 
-            # Retrieve based on diagnosis
             rag_text, relevance = rag_system.retrieve(text, predicted_dx)
             self.rag_cache.append(rag_text)
             self.relevance_cache.append(relevance)
@@ -597,7 +595,6 @@ checkpoint_file = CHECKPOINT_PATH / 'phase2_fixed_best.pt'
 for epoch in range(num_epochs):
     print(f"\n{'='*70}\nEpoch {epoch+1}/{num_epochs}\n{'='*70}")
 
-    # Train
     phase2_model.train()
     total_loss = 0
     gate_values = []
@@ -730,7 +727,7 @@ print("\n📊 Per-Class F1:")
 for i, code in enumerate(TARGET_CODES):
     print(f"   {code}: {per_class_f1[i]:.4f}")
 
-phase1_f1 = checkpoint.get('macro_f1', 0.78)  # From Phase 1 Fixed
+phase1_f1 = checkpoint.get('macro_f1', 0.78)
 improvement = macro_f1 - phase1_f1
 
 print(f"\n🔥 VS PHASE 1 FIXED:")
@@ -767,14 +764,7 @@ results = {
         'adaptive_gate': True,
         'avg_relevance': float(checkpoint.get('avg_relevance', 0)),
         'rag_gate': float(checkpoint.get('rag_gate', 0))
-    },
-    'fixes_applied': [
-        'Diagnosis-aware retrieval (separate indices per diagnosis)',
-        'Relevance scoring for retrieved documents',
-        'Adaptive RAG gate (learns when RAG helps)',
-        'Enhanced corpus (more clinical knowledge)',
-        'Quality-filtered case prototypes'
-    ]
+    }
 }
 
 with open(RESULTS_PATH / 'phase2_fixed_results.json', 'w') as f:
@@ -787,5 +777,4 @@ print("\n" + "="*80)
 print("✅ PHASE 2 FIXED COMPLETE!")
 print("="*80)
 print(f"\n📈 Final Macro F1: {macro_f1:.4f}")
-print("\n🚀 Ready for Phase 3 Fixed (Enhanced XAI Metrics)")
 print(f"\nAlhamdulillah! 🤲")
