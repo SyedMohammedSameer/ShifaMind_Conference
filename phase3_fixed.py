@@ -265,7 +265,7 @@ class AdaptiveRAGFusion(nn.Module):
 
         # Adaptive gate based on text quality, RAG quality, and relevance
         self.gate_net = nn.Sequential(
-            nn.Linear(hidden_size * 3, hidden_size),
+            nn.Linear(hidden_size * 2 + 1, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, 1),
             nn.Sigmoid()
