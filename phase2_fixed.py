@@ -662,7 +662,9 @@ for epoch in range(num_epochs):
             'macro_f1': best_f1,
             'epoch': epoch,
             'rag_gate': avg_gate,
-            'avg_relevance': avg_relevance
+            'avg_relevance': avg_relevance,
+            'concept_embeddings': phase2_model.phase1_model.concept_embeddings.data.cpu(),
+            'num_concepts': num_concepts
         }, checkpoint_file)
         print(f"  ✅ Saved (F1: {best_f1:.4f})")
 
