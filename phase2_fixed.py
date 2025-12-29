@@ -497,7 +497,7 @@ class ShifaMindPhase2Fixed(nn.Module):
                 rag_cls_list.append(torch.zeros_like(text_cls[0:1]))
 
         rag_cls = torch.cat(rag_cls_list, dim=0)
-        relevance_tensor = torch.FloatTensor(relevance_scores).unsqueeze(-1).to(device)
+        relevance_tensor = torch.tensor(relevance_scores, dtype=torch.float32, device=device).unsqueeze(-1)
         fused_cls, gate = self.rag_fusion(text_cls, rag_cls, relevance_tensor)
 
         diagnosis_logits = self.phase1_model.diagnosis_head(fused_cls)
