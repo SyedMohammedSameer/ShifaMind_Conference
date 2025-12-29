@@ -384,7 +384,7 @@ tokenizer = AutoTokenizer.from_pretrained("emilyalsentzer/Bio_ClinicalBERT")
 print("✅ Tokenizer")
 
 print("\nLoading Phase 2 Fixed checkpoint...")
-checkpoint = torch.load(PHASE2_FIXED_CHECKPOINT, map_location=device)
+checkpoint = torch.load(PHASE2_FIXED_CHECKPOINT, map_location=device, weights_only=False)
 print(f"✅ Checkpoint loaded (F1: {checkpoint.get('macro_f1', 0):.4f})")
 
 # Load concept embeddings

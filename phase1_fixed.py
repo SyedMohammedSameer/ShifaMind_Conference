@@ -138,7 +138,7 @@ print("🧬 LOADING CONCEPT EMBEDDINGS")
 print("="*80)
 
 tokenizer = AutoTokenizer.from_pretrained("emilyalsentzer/Bio_ClinicalBERT")
-concept_embeddings_frozen = torch.load(SHARED_DATA_PATH / 'concept_embeddings.pt', map_location=device)
+concept_embeddings_frozen = torch.load(SHARED_DATA_PATH / 'concept_embeddings.pt', map_location=device, weights_only=False)
 num_concepts = concept_embeddings_frozen.shape[0]
 
 print(f"✅ Concept embeddings: {concept_embeddings_frozen.shape}")
@@ -535,7 +535,7 @@ print("\n" + "="*80)
 print("📊 FINAL EVALUATION")
 print("="*80)
 
-checkpoint = torch.load(checkpoint_file, map_location=device)
+checkpoint = torch.load(checkpoint_file, map_location=device, weights_only=False)
 model.load_state_dict(checkpoint['model_state_dict'])
 
 model.eval()

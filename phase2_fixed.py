@@ -421,7 +421,7 @@ class ShifaMindPhase1Fixed(nn.Module):
         return {'logits': diagnosis_logits, 'cls_hidden': cls_hidden}
 
 tokenizer = AutoTokenizer.from_pretrained("emilyalsentzer/Bio_ClinicalBERT")
-checkpoint = torch.load(PHASE1_CHECKPOINT, map_location=device)
+checkpoint = torch.load(PHASE1_CHECKPOINT, map_location=device, weights_only=False)
 concept_embeddings = checkpoint['concept_embeddings'].to(device)
 
 base_model = AutoModel.from_pretrained("emilyalsentzer/Bio_ClinicalBERT").to(device)
@@ -676,7 +676,7 @@ print("\n" + "="*80)
 print("📊 FINAL TEST EVALUATION")
 print("="*80)
 
-checkpoint = torch.load(checkpoint_file, map_location=device)
+checkpoint = torch.load(checkpoint_file, map_location=device, weights_only=False)
 phase2_model.load_state_dict(checkpoint['model_state_dict'])
 
 phase2_model.eval()

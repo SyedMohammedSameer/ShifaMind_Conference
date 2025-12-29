@@ -393,8 +393,8 @@ print("\n" + "="*80)
 print("📥 LOADING PHASE 1 & 2 FIXED RESULTS")
 print("="*80)
 
-phase1_fixed_ckpt = torch.load(PHASE1_FIXED_CHECKPOINT, map_location=device)
-phase2_fixed_ckpt = torch.load(PHASE2_FIXED_CHECKPOINT, map_location=device)
+phase1_fixed_ckpt = torch.load(PHASE1_FIXED_CHECKPOINT, map_location=device, weights_only=False)
+phase2_fixed_ckpt = torch.load(PHASE2_FIXED_CHECKPOINT, map_location=device, weights_only=False)
 concept_embeddings = phase1_fixed_ckpt['concept_embeddings'].to(device)
 num_concepts = concept_embeddings.shape[0]
 
