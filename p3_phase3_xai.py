@@ -662,8 +662,8 @@ def compute_keyword_attention(model, test_loader, concept_embeddings, tokenizer,
 
                                 if keyword_mask.sum() > 0:
                                     # Average attention over concepts first, then compute keyword attention
-                                    # fusion_attn[i] shape: (num_concepts, seq_len)
-                                    avg_attn = fusion_attn[i].mean(dim=0)  # (seq_len,)
+                                    # fusion_attn[i] shape: (seq_len, num_concepts)
+                                    avg_attn = fusion_attn[i].mean(dim=1)  # Average over concepts -> (seq_len,)
                                     attn_on_keywords = (avg_attn * keyword_mask).sum() / keyword_mask.sum()
                                     keyword_attention_ratios.append(attn_on_keywords.item())
 
