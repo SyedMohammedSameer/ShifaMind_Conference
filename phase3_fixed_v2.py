@@ -898,12 +898,11 @@ num_concepts = checkpoint['num_concepts']
 with open(SHARED_DATA_PATH / 'test_split.pkl', 'rb') as f:
     df_test = pickle.load(f)
 
-# Create dummy concept labels with CORRECT number of concepts
-# TODO: Replace with actual concept labels from your data
-concept_labels_test = np.random.randint(0, 2, size=(len(df_test), num_concepts)).astype(float)
+# Load ACTUAL concept labels (generated in Phase 1)
+test_concept_labels = np.load(SHARED_DATA_PATH / 'test_concept_labels.npy')
 
 print(f"✅ Loaded test set: {len(df_test):,} samples")
-print(f"✅ Using {num_concepts} concepts from checkpoint")
+print(f"✅ Loaded concept labels: {test_concept_labels.shape}")
 
 # Load model
 print("\n📥 Building Phase 2 Fixed model...")
@@ -931,7 +930,7 @@ print(f"✅ Loaded Phase 2 Fixed (F1: {checkpoint.get('macro_f1', 0):.4f})")
 test_dataset = XAIDataset(
     df_test['text'].tolist(),
     df_test['labels'].tolist(),
-    concept_labels_test.tolist(),
+    test_concept_labels.tolist(),
     tokenizer
 )
 test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
