@@ -91,16 +91,24 @@ print("="*80)
 BASE_PATH = Path('/content/drive/MyDrive/ShifaMind')
 OUTPUT_BASE = BASE_PATH / '08_ShifaMind'
 
+# Use existing shared_data if available (same as Phase 1)
+EXISTING_SHARED_DATA = BASE_PATH / '03_Models/shared_data'
+if EXISTING_SHARED_DATA.exists():
+    SHARED_DATA_PATH = EXISTING_SHARED_DATA
+else:
+    SHARED_DATA_PATH = OUTPUT_BASE / 'shared_data'
+
 # Paths
 PHASE1_CHECKPOINT = OUTPUT_BASE / 'checkpoints/phase1_v2/phase1_v2_best.pt'
 CHECKPOINT_PATH = OUTPUT_BASE / 'checkpoints/phase2_v2'
-SHARED_DATA_PATH = OUTPUT_BASE / 'shared_data'
 RESULTS_PATH = OUTPUT_BASE / 'results/phase2_v2'
 CONCEPT_STORE_PATH = OUTPUT_BASE / 'concept_store'
 
 # Create directories
 for path in [CHECKPOINT_PATH, RESULTS_PATH, CONCEPT_STORE_PATH]:
     path.mkdir(parents=True, exist_ok=True)
+if not SHARED_DATA_PATH.exists():
+    SHARED_DATA_PATH.mkdir(parents=True, exist_ok=True)
 
 print(f"📁 Phase 1 Checkpoint: {PHASE1_CHECKPOINT}")
 print(f"📁 Checkpoints: {CHECKPOINT_PATH}")
