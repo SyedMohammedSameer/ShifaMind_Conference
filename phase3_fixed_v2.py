@@ -889,21 +889,24 @@ if not PHASE2_FIXED_CHECKPOINT.exists():
 
 print(f"✅ Found Phase 2: {PHASE2_FIXED_CHECKPOINT.name}")
 
+# Load checkpoint first to get correct number of concepts
+print("\n📥 Loading Phase 2 Fixed checkpoint...")
+checkpoint = torch.load(PHASE2_FIXED_CHECKPOINT, map_location=device, weights_only=False)
+num_concepts = checkpoint['num_concepts']
+
 # Load splits
 with open(SHARED_DATA_PATH / 'test_split.pkl', 'rb') as f:
     df_test = pickle.load(f)
 
-# Create dummy concept labels (you should load these from your data)
-# For now, using random concept labels as placeholder
-num_concepts = 50  # Will be overridden by checkpoint
+# Create dummy concept labels with CORRECT number of concepts
+# TODO: Replace with actual concept labels from your data
 concept_labels_test = np.random.randint(0, 2, size=(len(df_test), num_concepts)).astype(float)
 
 print(f"✅ Loaded test set: {len(df_test):,} samples")
+print(f"✅ Using {num_concepts} concepts from checkpoint")
 
 # Load model
-print("\n📥 Loading Phase 2 Fixed model...")
-checkpoint = torch.load(PHASE2_FIXED_CHECKPOINT, map_location=device, weights_only=False)
-
+print("\n📥 Building Phase 2 Fixed model...")
 tokenizer = AutoTokenizer.from_pretrained("emilyalsentzer/Bio_ClinicalBERT")
 base_model = AutoModel.from_pretrained("emilyalsentzer/Bio_ClinicalBERT").to(device)
 
