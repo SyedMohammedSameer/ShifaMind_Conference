@@ -319,8 +319,11 @@ print(f"\n📥 Loading Phase 1 checkpoint: {PHASE1_CHECKPOINT}")
 if PHASE1_CHECKPOINT.exists():
     checkpoint = torch.load(PHASE1_CHECKPOINT, map_location=device)
     print(f"✅ Loaded Phase 1 checkpoint")
-    print(f"   Best F1: {checkpoint['best_f1']:.4f}")
-    print(f"   Epoch: {checkpoint['epoch']}")
+    if 'best_f1' in checkpoint:
+        print(f"   Best F1: {checkpoint['best_f1']:.4f}")
+    if 'epoch' in checkpoint:
+        print(f"   Epoch: {checkpoint['epoch']}")
+    print(f"   Available keys: {list(checkpoint.keys())}")
 else:
     print("⚠️  Phase 1 checkpoint not found - will initialize from scratch")
     checkpoint = None
