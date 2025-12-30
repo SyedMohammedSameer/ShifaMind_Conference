@@ -88,7 +88,7 @@ print("⚙️  CONFIGURATION")
 print("="*80)
 
 # Local environment path
-BASE_PATH = Path('/home/user/ShifaMind_Conference')
+BASE_PATH = Path('/content/drive/MyDrive/ShifaMind')
 OUTPUT_BASE = BASE_PATH / '08_ShifaMind'
 
 # Paths

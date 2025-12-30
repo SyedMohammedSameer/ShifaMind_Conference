@@ -100,7 +100,7 @@ print("⚙️  CONFIGURATION")
 print("="*80)
 
 # Paths
-BASE_PATH = Path('/home/user/ShifaMind_Conference')
+BASE_PATH = Path('/content/drive/MyDrive/ShifaMind')
 OUTPUT_BASE = BASE_PATH / '08_ShifaMind'
 
 PHASE4_CHECKPOINT = OUTPUT_BASE / 'checkpoints/phase4_v2/phase4_v2_best.pt'
