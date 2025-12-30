@@ -553,7 +553,7 @@ model = ShifaMindPhase3(
 # Load Phase 2 weights if available
 if PHASE2_CHECKPOINT.exists():
     print(f"\n📥 Loading Phase 2 checkpoint...")
-    checkpoint = torch.load(PHASE2_CHECKPOINT, map_location=device)
+    checkpoint = torch.load(PHASE2_CHECKPOINT, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'], strict=False)
     print("✅ Loaded Phase 2 weights (partial)")
 else:
@@ -862,7 +862,7 @@ print("\n" + "="*80)
 print("📊 FINAL EVALUATION")
 print("="*80)
 
-checkpoint = torch.load(CHECKPOINT_PATH / 'phase3_v2_best.pt')
+checkpoint = torch.load(CHECKPOINT_PATH / 'phase3_v2_best.pt', weights_only=False)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 

@@ -315,7 +315,7 @@ model = ShifaMindPhase4(
 ).to(device)
 
 if PHASE3_CHECKPOINT.exists():
-    checkpoint = torch.load(PHASE3_CHECKPOINT, map_location=device)
+    checkpoint = torch.load(PHASE3_CHECKPOINT, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'], strict=False)
     print("✅ Loaded Phase 3 weights (partial)")
 else:

@@ -292,7 +292,7 @@ model = ShifaMindXAI(
 ).to(device)
 
 if PHASE4_CHECKPOINT.exists():
-    checkpoint = torch.load(PHASE4_CHECKPOINT, map_location=device)
+    checkpoint = torch.load(PHASE4_CHECKPOINT, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'], strict=False)
     concept_embedding_layer.weight.data = checkpoint['concept_embeddings']
     print("✅ Loaded Phase 4 checkpoint")

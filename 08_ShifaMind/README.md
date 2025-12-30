@@ -243,6 +243,36 @@ pip install torch transformers scikit-learn pandas numpy tqdm
 pip install torch-geometric networkx scipy matplotlib
 ```
 
+### Step 0: Prepare MIMIC-IV Data (Required!)
+
+**The code now uses REAL MIMIC-IV data, not synthetic data.**
+
+1. **Download MIMIC-IV** (requires PhysioNet credentialed access):
+   - MIMIC-IV-Note: https://physionet.org/content/mimic-iv-note/
+   - MIMIC-IV: https://physionet.org/content/mimiciv/
+
+2. **Preprocess the data:**
+```bash
+python 08_ShifaMind/prepare_mimic_data.py \
+    --mimic_note_path /path/to/mimic-iv-note-2.2 \
+    --mimic_hosp_path /path/to/mimic-iv-3.1/hosp \
+    --output_path ./mimic_dx_data.csv
+```
+
+3. **Place the CSV:**
+```bash
+mv mimic_dx_data.csv /home/user/ShifaMind_Conference/
+```
+
+Or update `MIMIC_DATA_PATH` in `phase1_v2.py` to point to your CSV location.
+
+**Expected CSV format:**
+```
+text,J189,I5023,A419,K8000
+"Patient presents with fever and cough...",1,0,0,0
+"Patient with CHF exacerbation...",0,1,0,0
+```
+
 ### Phase 1: Concept Bottleneck
 
 ```bash
@@ -254,9 +284,9 @@ python 08_ShifaMind/phase1_v2.py
 - Data: `shared_data/train_split.pkl`, `shared_data/concept_list.json`
 - Results: `results/phase1_v2/results.json`
 
-**Expected Metrics:**
-- Diagnosis F1: 0.75-0.80
-- Concept F1: 0.70-0.75
+**Expected Metrics (on MIMIC-IV):**
+- Diagnosis F1: 0.75-0.85
+- Concept F1: 0.60-0.75
 
 ### Phase 2: GraphSAGE
 

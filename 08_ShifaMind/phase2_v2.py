@@ -317,7 +317,7 @@ print("="*80)
 print(f"\n📥 Loading Phase 1 checkpoint: {PHASE1_CHECKPOINT}")
 
 if PHASE1_CHECKPOINT.exists():
-    checkpoint = torch.load(PHASE1_CHECKPOINT, map_location=device)
+    checkpoint = torch.load(PHASE1_CHECKPOINT, map_location=device, weights_only=False)
     print(f"✅ Loaded Phase 1 checkpoint")
     if 'best_f1' in checkpoint:
         print(f"   Best F1: {checkpoint['best_f1']:.4f}")
@@ -709,7 +709,7 @@ print("📊 FINAL EVALUATION")
 print("="*80)
 
 # Load best model
-checkpoint = torch.load(CHECKPOINT_PATH / 'phase2_v2_best.pt')
+checkpoint = torch.load(CHECKPOINT_PATH / 'phase2_v2_best.pt', weights_only=False)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 

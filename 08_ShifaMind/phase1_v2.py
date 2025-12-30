@@ -153,77 +153,69 @@ print("\n" + "="*80)
 print("📊 DATA LOADING & CONCEPT LABELING")
 print("="*80)
 
-# Load MIMIC-IV data (adjust path as needed)
-# NOTE: You'll need to have preprocessed MIMIC-IV data
-# For now, using placeholder - replace with your actual data loading
+# ============================================================================
+# LOAD REAL MIMIC-IV DATA
+# ============================================================================
+
 print("Loading MIMIC-IV data...")
 
-# TODO: Replace with actual data loading
-# For demonstration, creating synthetic data structure
-# In production, load from: BASE_PATH / 'mimic_iv_notes.csv'
+# IMPORTANT: Set this to your MIMIC-IV data path
+# Expected CSV format: columns = ['text', 'J189', 'I5023', 'A419', 'K8000']
+MIMIC_DATA_PATH = BASE_PATH / 'mimic_dx_data.csv'
 
 def load_mimic_data():
     """
-    Generate synthetic clinical notes for architecture testing
-    Replace this with your actual MIMIC-IV data loading
+    Load REAL MIMIC-IV data from CSV
+
+    Expected CSV format:
+    - text: Clinical note text
+    - J189: Binary label (0/1) for Pneumonia
+    - I5023: Binary label (0/1) for Heart Failure
+    - A419: Binary label (0/1) for Sepsis
+    - K8000: Binary label (0/1) for Cholecystitis
+
+    If you don't have this file, you need to preprocess MIMIC-IV:
+    1. Load discharge summaries from MIMIC-IV-Note
+    2. Link to ICD-10 codes from MIMIC-IV hosp/diagnoses_icd
+    3. Filter for target diagnoses
+    4. Save as CSV
     """
-    print("⚠️  Generating synthetic clinical notes for architecture testing")
+    if MIMIC_DATA_PATH.exists():
+        print(f"📥 Loading data from: {MIMIC_DATA_PATH}")
+        df = pd.read_csv(MIMIC_DATA_PATH)
 
-    # Templates for each diagnosis
-    templates = {
-        'J189': [
-            "Patient presents with fever, productive cough, and dyspnea. Chest X-ray shows right lower lobe infiltrate consistent with pneumonia. Respiratory rate elevated. Patient reports chest pain with deep breathing. Bronchial breath sounds noted on examination.",
-            "Elderly patient admitted with respiratory distress and fever. Clinical and radiographic findings suggest pneumonia, unspecified organism. Patient has productive cough with purulent sputum. Consolidation visible on imaging. Oxygen saturation decreased.",
-            "Patient complains of persistent cough, fever, and difficulty breathing. Physical exam reveals decreased breath sounds and dullness to percussion. Chest imaging confirms lung infiltrates suggestive of pneumonia."
-        ],
-        'I5023': [
-            "Patient with known CHF presents with worsening dyspnea and orthopnea. Physical exam reveals bilateral lower extremity edema and elevated JVP. BNP levels significantly elevated. Echocardiogram shows reduced ejection fraction. Patient has cardiomegaly on chest X-ray.",
-            "Acute decompensation of chronic systolic heart failure. Patient reports inability to lie flat and paroxysmal nocturnal dyspnea. Pulmonary edema noted on imaging. Cardiac examination reveals S3 gallop. Patient has history of heart disease.",
-            "Admitted for acute on chronic systolic heart failure exacerbation. Patient presents with severe dyspnea, orthopnea, and peripheral edema. BNP markedly elevated. Cardiac function significantly impaired."
-        ],
-        'A419': [
-            "Patient presents with fever, hypotension, and altered mental status concerning for sepsis. Blood cultures pending. WBC count elevated with left shift. Lactate level increased. Patient showing signs of septic shock with hemodynamic instability.",
-            "Sepsis, unspecified organism. Patient has fever, tachycardia, and hypotension. Clinical picture consistent with systemic infection and bacteremia. Inflammatory markers elevated. Cultures obtained from multiple sites.",
-            "Patient admitted with suspected sepsis. Presenting with fever, chills, hypotension requiring vasopressor support. Laboratory findings show elevated WBC and lactate. Patient has signs of organ dysfunction."
-        ],
-        'K8000': [
-            "Patient presents with severe right upper quadrant abdominal pain, fever, and positive Murphy's sign. Ultrasound reveals gallbladder wall thickening and gallstones consistent with acute cholecystitis. Patient reports nausea and vomiting. Biliary system appears inflamed.",
-            "Acute cholecystitis with cholelithiasis. Patient has RUQ pain radiating to right shoulder, fever, and leukocytosis. Imaging confirms calculus of gallbladder with acute inflammation. Murphy's sign positive on examination.",
-            "Patient complains of severe abdominal pain in right upper quadrant. Physical exam reveals tenderness and guarding. Ultrasound shows gallstones with gallbladder inflammation and cholestasis. Patient has fever and elevated WBC."
-        ]
-    }
+        # Validate columns
+        required_cols = ['text'] + TARGET_CODES
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}")
 
-    # Generate 2000 samples
-    np.random.seed(SEED)
-    n_samples = 2000
-    data = []
+        # Remove rows with missing text
+        df = df.dropna(subset=['text'])
 
-    for i in range(n_samples):
-        # Randomly select primary diagnosis (70% single, 30% multiple)
-        if np.random.random() < 0.7:
-            # Single diagnosis
-            primary_dx = np.random.choice(TARGET_CODES)
-            labels = {code: 1 if code == primary_dx else 0 for code in TARGET_CODES}
-            text = np.random.choice(templates[primary_dx])
-        else:
-            # Multiple diagnoses (comorbidities)
-            n_dx = np.random.choice([2, 3])
-            selected_codes = np.random.choice(TARGET_CODES, n_dx, replace=False)
-            labels = {code: 1 if code in selected_codes else 0 for code in TARGET_CODES}
-            # Combine templates
-            text_parts = [np.random.choice(templates[code]) for code in selected_codes]
-            text = " ".join(text_parts)
+        # Ensure labels are binary
+        for code in TARGET_CODES:
+            df[code] = df[code].fillna(0).astype(int)
 
-        data.append({
-            'text': text,
-            **labels
-        })
+        print(f"✅ Loaded {len(df):,} clinical notes from MIMIC-IV")
+        print(f"   Label distribution:")
+        for code in TARGET_CODES:
+            count = df[code].sum()
+            pct = count / len(df) * 100
+            print(f"   - {code} ({ICD_DESCRIPTIONS[code]}): {count} ({pct:.1f}%)")
 
-    df = pd.DataFrame(data)
-    return df
+        return df
+    else:
+        print(f"❌ ERROR: MIMIC data file not found at: {MIMIC_DATA_PATH}")
+        print(f"\n⚠️  Please create this CSV file with your MIMIC-IV data.")
+        print(f"\nExpected format:")
+        print(f"   text,J189,I5023,A419,K8000")
+        print(f"   \"Patient presents with...\",1,0,0,0")
+        print(f"   \"Elderly patient admitted...\",0,1,0,0")
+        print(f"\nOR update MIMIC_DATA_PATH in the code to point to your data file.")
+        raise FileNotFoundError(f"MIMIC data not found: {MIMIC_DATA_PATH}")
 
 df = load_mimic_data()
-print(f"✅ Loaded {len(df):,} clinical notes")
 
 # Create label array
 df['labels'] = df[TARGET_CODES].values.tolist()
@@ -705,7 +697,7 @@ print("📊 FINAL TEST EVALUATION")
 print("="*80)
 
 # Load best model
-checkpoint = torch.load(CHECKPOINT_PATH / 'phase1_v2_best.pt', map_location=device)
+checkpoint = torch.load(CHECKPOINT_PATH / 'phase1_v2_best.pt', map_location=device, weights_only=False)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 
