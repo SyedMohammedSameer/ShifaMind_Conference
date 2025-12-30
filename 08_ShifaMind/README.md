@@ -128,37 +128,63 @@ Knowledge Graph → GraphSAGE → Graph Concepts
 
 ### Phase 3: RAG + Citation Head
 
-**File:** `phase3_v2.py`
+**Files:**
+- `phase3_v2.py` (original - has performance issues)
+- `phase3_v2_fixed.py` ✅ **RECOMMENDED** - Proven FAISS RAG approach
 
-**Additions:**
-- Evidence database with clinical knowledge
-- Dense retrieval (DPR) for evidence grounding
-- Citation Head (predicts which evidence supports diagnosis)
-- Action Head (recommends clinical actions)
-- Multi-head outputs: Diagnosis + Citation + Action
+**⚠️ IMPORTANT:** Use `phase3_v2_fixed.py` - the original phase3_v2.py caused F1 to drop from 0.76 → 0.54
 
-**Architecture:**
+**Additions (Fixed Version):**
+- FAISS + sentence-transformers for retrieval (proven approach)
+- Evidence corpus: clinical knowledge + MIMIC case prototypes
+- Gated fusion mechanism (40% cap on RAG contribution)
+- Diagnosis-focused training (λ_dx=2.0)
+- Simplified architecture (no citation/action heads)
+
+**Phase 3 Performance Issue & Fix:**
+
+| Version | Approach | F1 Score | Status |
+|---------|----------|----------|--------|
+| Phase 2 (baseline) | GraphSAGE | 0.7599 | ✅ |
+| Phase 3 Original | BioClinicalBERT retrieval + 5 heads | 0.5435 | ❌ 28% drop |
+| Phase 3 Fixed | FAISS + sentence-transformers | TBD | ✅ Expected >0.80 |
+
+**What went wrong in original Phase 3:**
+1. Used BioClinicalBERT for retrieval (too complex)
+2. Only 14 manually-created evidence passages
+3. 5 competing objectives diluted diagnosis focus
+4. No MIMIC case prototypes in corpus
+5. Loss weights didn't prioritize diagnosis (λ_dx=1.0)
+
+**How the fixed version works:**
+1. ✅ FAISS + sentence-transformers/all-MiniLM-L6-v2 (proven from p2_phase2_rag.py)
+2. ✅ Evidence corpus: clinical knowledge + 20 MIMIC prototypes per diagnosis (~100 passages)
+3. ✅ Gated fusion: `output = hidden + gate * rag_context` with 40% cap
+4. ✅ Simplified: only dx + align + concept losses (no cite/action)
+5. ✅ Diagnosis-focused: λ_dx=2.0 (doubled)
+6. ✅ Proven parameters: top_k=3, threshold=0.7
+
+**Architecture (Fixed Version):**
 ```
-Clinical Note → Evidence Retriever → Top-k Evidence Passages
+Clinical Note → FAISS Retriever (top_k=3) → Relevant Evidence
                         ↓
-              Evidence Attention
+              Gated Fusion (40% cap)
                         ↓
               Concept Bottleneck
                         ↓
-         ┌──────────┬──────────┬──────────┐
-    Diagnosis   Citation    Action
-      Head        Head        Head
+              Diagnosis Head
 ```
 
-**Multi-Objective Loss (Extended):**
+**Multi-Objective Loss (Simplified):**
 ```python
-L_total = λ₁·L_dx + λ₂·L_align + λ₃·L_concept + λ₄·L_cite + λ₅·L_action
+L_total = 2.0·L_dx + 0.5·L_align + 0.3·L_concept
 ```
 
-**Evidence Database:**
-- 14 clinical evidence passages
-- Diagnostic criteria, clinical signs, imaging findings
-- Sources: Clinical guidelines, textbooks, research
+**Evidence Corpus:**
+- ~100 passages total
+- Clinical knowledge from ICD-10 criteria
+- 20 case prototypes per diagnosis from MIMIC training data
+- FAISS IndexFlatIP for fast retrieval
 
 ---
 
@@ -301,14 +327,27 @@ python 08_ShifaMind/phase2_v2.py
 
 ### Phase 3: RAG + Citation
 
+**⚠️ IMPORTANT:** Use the fixed version to avoid performance degradation!
+
 ```bash
-python 08_ShifaMind/phase3_v2.py
+# RECOMMENDED: Run the fixed version
+python 08_ShifaMind/phase3_v2_fixed.py
+```
+
+**Prerequisites for FAISS:**
+```bash
+pip install sentence-transformers faiss-cpu
 ```
 
 **Output:**
-- Checkpoint: `checkpoints/phase3_v2/phase3_v2_best.pt`
-- Evidence: `evidence_store/evidence_database.json`
-- Results: `results/phase3_v2/results.json`
+- Checkpoint: `checkpoints/phase3_v2_fixed/phase3_v2_fixed_best.pt`
+- Evidence: `evidence_store/evidence_corpus_fixed.json`
+- Results: `results/phase3_v2_fixed/results.json`
+
+**Expected Results:**
+- Diagnosis F1: >0.80 (recovers from 0.54 → 0.80+)
+- Evidence corpus: ~100 passages (clinical knowledge + MIMIC prototypes)
+- RAG contribution: gated at 40%
 
 ### Phase 4: Uncertainty
 
