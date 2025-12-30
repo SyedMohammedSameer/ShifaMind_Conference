@@ -338,13 +338,13 @@ class ShifaMindPhase2Fixed(nn.Module):
 
                 # Use intervened concepts instead of learned ones
                 batch_concepts = intervened_concepts.mean(dim=0)  # Pool across batch
-                fused_hidden, _ = self.phase1_model.fusion_modules[str(layer_idx)](
+                fused_hidden, _, _ = self.phase1_model.fusion_modules[str(layer_idx)](
                     layer_hidden, batch_concepts, attention_mask
                 )
                 current_hidden = fused_hidden
 
-        cls_hidden = self.dropout(current_hidden[:, 0, :])
-        diagnosis_logits = self.diagnosis_head_final(cls_hidden)
+        cls_hidden = self.phase1_model.dropout(current_hidden[:, 0, :])
+        diagnosis_logits = self.phase1_model.diagnosis_head(cls_hidden)
         concept_scores = torch.sigmoid(self.phase1_model.concept_head(cls_hidden))
 
         return {
@@ -380,13 +380,13 @@ class ShifaMindPhase2Fixed(nn.Module):
         for layer_idx in self.phase1_model.fusion_layers:
             if str(layer_idx) in self.phase1_model.fusion_modules:
                 layer_hidden = hidden_states[layer_idx]
-                fused_hidden, _ = self.phase1_model.fusion_modules[str(layer_idx)](
+                fused_hidden, _, _ = self.phase1_model.fusion_modules[str(layer_idx)](
                     layer_hidden, masked_concepts, attention_mask
                 )
                 current_hidden = fused_hidden
 
-        cls_hidden = self.dropout(current_hidden[:, 0, :])
-        diagnosis_logits = self.diagnosis_head_final(cls_hidden)
+        cls_hidden = self.phase1_model.dropout(current_hidden[:, 0, :])
+        diagnosis_logits = self.phase1_model.diagnosis_head(cls_hidden)
 
         return diagnosis_logits
 
@@ -666,8 +666,8 @@ def compute_tcav_scores(model, test_loader, concept_embeddings, device, num_samp
                 hidden_states = hidden_states.clone().detach().requires_grad_(True)
 
                 # Recompute diagnosis logit from hidden states
-                cls_hidden = model.dropout(hidden_states[:, 0, :])
-                recomputed_logit = model.diagnosis_head_final(cls_hidden)[0, diag_idx]
+                cls_hidden = model.phase1_model.dropout(hidden_states[:, 0, :])
+                recomputed_logit = model.phase1_model.diagnosis_head(cls_hidden)[0, diag_idx]
 
                 # Gradient of diagnosis logit w.r.t hidden states
                 grad = torch.autograd.grad(
