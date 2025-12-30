@@ -145,9 +145,9 @@ class AdaptiveGatedCrossAttention(nn.Module):
         self.value = nn.Linear(hidden_size, hidden_size)
         self.out_proj = nn.Linear(hidden_size, hidden_size)
 
-        # Adaptive gate (4 layers, input = hidden*2 + 1 for scalar relevance)
+        # Adaptive gate (matches Phase 2 checkpoint architecture)
         self.gate_net = nn.Sequential(
-            nn.Linear(hidden_size * 2 + 1, hidden_size),
+            nn.Linear(hidden_size * 3, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, 1),
             nn.Sigmoid()
@@ -174,12 +174,13 @@ class AdaptiveGatedCrossAttention(nn.Module):
         context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
         context = self.out_proj(context)
 
-        # Compute relevance
+        # Compute relevance (expand to full hidden_size for gate_net)
         text_pooled = hidden_states.mean(dim=1)
         concept_pooled = concepts_batch.mean(dim=1)
         relevance = F.cosine_similarity(text_pooled, concept_pooled, dim=-1)
         relevance = relevance.unsqueeze(-1).unsqueeze(-1)
-        relevance_features = relevance.expand(-1, seq_len, -1)
+        relevance = relevance.expand(-1, seq_len, -1)
+        relevance_features = relevance.expand(-1, -1, self.hidden_size)
 
         # Learnable gate
         gate_input = torch.cat([hidden_states, context, relevance_features], dim=-1)
@@ -188,21 +189,18 @@ class AdaptiveGatedCrossAttention(nn.Module):
         output = hidden_states + gate_values * context
         output = self.layer_norm(output)
 
-        return output, attn_weights.mean(dim=1)
+        return output, attn_weights.mean(dim=1), gate_values.mean()
 
 
 class ShifaMindPhase1Fixed(nn.Module):
     """Phase 1 Fixed model with concept grounding"""
-    def __init__(self, base_model, num_concepts, num_classes, fusion_layers=[9, 11]):
+    def __init__(self, base_model, concept_embeddings_init, num_classes, fusion_layers=[9, 11]):
         super().__init__()
         self.base_model = base_model
         self.hidden_size = base_model.config.hidden_size
-        self.num_concepts = num_concepts
+        self.concept_embeddings = nn.Parameter(concept_embeddings_init.clone())
+        self.num_concepts = concept_embeddings_init.shape[0]
         self.fusion_layers = fusion_layers
-
-        # Concept embeddings as parameters
-        concept_embeddings_init = torch.randn(num_concepts, self.hidden_size) * 0.02
-        self.concept_embeddings = nn.Parameter(concept_embeddings_init)
 
         # Fusion modules at specified layers
         self.fusion_modules = nn.ModuleDict({
@@ -212,7 +210,7 @@ class ShifaMindPhase1Fixed(nn.Module):
 
         # Heads
         self.diagnosis_head = nn.Linear(self.hidden_size, num_classes)
-        self.concept_head = nn.Linear(self.hidden_size, num_concepts)
+        self.concept_head = nn.Linear(self.hidden_size, self.num_concepts)
         self.dropout = nn.Dropout(0.1)
 
     def forward(self, input_ids, attention_mask, return_attention=False):
@@ -223,99 +221,86 @@ class ShifaMindPhase1Fixed(nn.Module):
 
         hidden_states = outputs.hidden_states
         current_hidden = outputs.last_hidden_state
-        attention_maps = {}
 
         # Apply fusion at specified layers
-        for layer_idx in self.fusion_layers:
+        for layer_idx in [9, 11]:
             if str(layer_idx) in self.fusion_modules:
                 layer_hidden = hidden_states[layer_idx]
-                fused_hidden, attn = self.fusion_modules[str(layer_idx)](
+                fused_hidden, _, _ = self.fusion_modules[str(layer_idx)](
                     layer_hidden, self.concept_embeddings, attention_mask
                 )
                 current_hidden = fused_hidden
-                if return_attention:
-                    attention_maps[f'layer_{layer_idx}'] = attn
 
         cls_hidden = self.dropout(current_hidden[:, 0, :])
         diagnosis_logits = self.diagnosis_head(cls_hidden)
-        concept_scores = torch.sigmoid(self.concept_head(cls_hidden))
 
         result = {
             'logits': diagnosis_logits,
-            'concept_scores': concept_scores,
+            'cls_hidden': cls_hidden,
             'hidden_states': current_hidden
         }
-        if return_attention:
-            result['attention_maps'] = attention_maps
+
+        # For XAI metrics, also compute concept scores
+        if hasattr(self, 'concept_head'):
+            concept_scores = torch.sigmoid(self.concept_head(cls_hidden))
+            result['concept_scores'] = concept_scores
 
         return result
 
 
 class AdaptiveRAGFusion(nn.Module):
     """Adaptive RAG fusion with learnable gating"""
-    def __init__(self, hidden_size):
+    def __init__(self, hidden_size=768):
         super().__init__()
-        self.hidden_size = hidden_size
-
-        # RAG fusion gate
-        self.rag_fusion_gate = nn.Sequential(
+        self.gate_net = nn.Sequential(
             nn.Linear(hidden_size * 2 + 1, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, 1),
             nn.Sigmoid()
         )
+        self.rag_proj = nn.Linear(hidden_size, hidden_size)
         self.layer_norm = nn.LayerNorm(hidden_size)
 
-    def forward(self, cls_hidden, rag_hidden, relevance_score):
-        batch_size = cls_hidden.shape[0]
-
-        # Expand relevance score to match hidden dimension
-        relevance = relevance_score.view(batch_size, 1).expand(-1, self.hidden_size)
-
-        # Concatenate features
-        fusion_input = torch.cat([cls_hidden, rag_hidden, relevance_score.unsqueeze(-1)], dim=-1)
-
-        # Compute gate
-        gate = self.rag_fusion_gate(fusion_input)
-
-        # Fuse
-        fused = cls_hidden + gate * rag_hidden
+    def forward(self, text_cls, rag_cls, relevance_score):
+        rag_projected = self.rag_proj(rag_cls)
+        gate_input = torch.cat([text_cls, rag_projected, relevance_score], dim=-1)
+        gate = self.gate_net(gate_input)
+        fused = (1 - gate) * text_cls + gate * rag_projected
         fused = self.layer_norm(fused)
-
         return fused, gate
 
 
 class ShifaMindPhase2Fixed(nn.Module):
     """Phase 2 Fixed with diagnosis-aware RAG"""
-    def __init__(self, phase1_model, rag_hidden_size=768):
+    def __init__(self, phase1_model, tokenizer=None, rag_system=None):
         super().__init__()
         self.phase1_model = phase1_model
-        self.hidden_size = phase1_model.hidden_size
+        self.tokenizer = tokenizer
+        self.rag_system = rag_system
+        self.rag_fusion = AdaptiveRAGFusion(hidden_size=phase1_model.hidden_size)
 
-        # RAG processing
-        self.rag_encoder = nn.Linear(rag_hidden_size, self.hidden_size)
-        self.rag_fusion = AdaptiveRAGFusion(self.hidden_size)
+    def forward(self, input_ids, attention_mask, rag_texts=None, relevance_scores=None):
+        """
+        Forward with optional RAG (for compatibility with checkpoint)
+        For XAI evaluation, rag_texts and relevance_scores can be None
+        """
+        # Get Phase 1 outputs
+        phase1_outputs = self.phase1_model(input_ids, attention_mask)
 
-        # Diagnosis head (overrides Phase 1)
-        self.diagnosis_head_final = nn.Linear(self.hidden_size, len(TARGET_CODES))
-        self.dropout = nn.Dropout(0.1)
+        # For XAI evaluation without RAG, just use Phase 1 outputs
+        if rag_texts is None or relevance_scores is None:
+            return phase1_outputs
 
-    def forward(self, input_ids, attention_mask, return_attention=False):
-        # Phase 1 forward
-        phase1_outputs = self.phase1_model(input_ids, attention_mask, return_attention=return_attention)
+        # Full RAG forward (not used in XAI evaluation)
+        text_cls = phase1_outputs['cls_hidden']
+        # ... RAG processing would go here ...
+        diagnosis_logits = self.phase1_model.diagnosis_head(text_cls)
 
-        cls_hidden = self.dropout(phase1_outputs['hidden_states'][:, 0, :])
-        diagnosis_logits = self.diagnosis_head_final(cls_hidden)
-
-        result = {
+        return {
             'logits': diagnosis_logits,
-            'concept_scores': phase1_outputs['concept_scores'],
-            'hidden_states': phase1_outputs['hidden_states']
+            'concept_scores': phase1_outputs.get('concept_scores'),
+            'hidden_states': phase1_outputs.get('hidden_states')
         }
-        if return_attention:
-            result['attention_maps'] = phase1_outputs.get('attention_maps', {})
-
-        return result
 
     def forward_with_concept_intervention(self, input_ids, attention_mask, gt_concept_mask):
         """
@@ -921,20 +906,20 @@ checkpoint = torch.load(PHASE2_FIXED_CHECKPOINT, map_location=device, weights_on
 tokenizer = AutoTokenizer.from_pretrained("emilyalsentzer/Bio_ClinicalBERT")
 base_model = AutoModel.from_pretrained("emilyalsentzer/Bio_ClinicalBERT").to(device)
 
-# Build Phase 1
-num_concepts = checkpoint['num_concepts']
+# Get concept embeddings from checkpoint
+concept_embeddings = checkpoint['concept_embeddings'].to(device)
+
+# Build Phase 1 (using concept_embeddings_init parameter)
 phase1_model = ShifaMindPhase1Fixed(
-    base_model, num_concepts, len(TARGET_CODES), fusion_layers=[9, 11]
+    base_model, concept_embeddings, len(TARGET_CODES), fusion_layers=[9, 11]
 ).to(device)
 
 # Build Phase 2
-phase2_model = ShifaMindPhase2Fixed(phase1_model).to(device)
+phase2_model = ShifaMindPhase2Fixed(phase1_model, tokenizer=tokenizer).to(device)
 
 # Load state dict
 phase2_model.load_state_dict(checkpoint['model_state_dict'])
 phase2_model.eval()
-
-concept_embeddings = checkpoint['concept_embeddings'].to(device)
 
 print(f"✅ Loaded Phase 2 Fixed (F1: {checkpoint.get('macro_f1', 0):.4f})")
 
