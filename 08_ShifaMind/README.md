@@ -188,75 +188,74 @@ L_total = 2.0·L_dx + 0.5·L_align + 0.3·L_concept
 
 ---
 
-### Phase 4: Uncertainty Quantification
+### Phase 4: Comprehensive XAI Evaluation
 
 **File:** `phase4_v2.py`
 
-**Additions:**
-- Monte Carlo Dropout for epistemic uncertainty
-- Calibration metrics (ECE, MCE, Brier Score)
-- Confidence-aware predictions
-- Selective prediction (abstain when uncertain)
+**Purpose:** Validate interpretability of concept bottleneck architecture
 
-**Architecture:**
-```
-Input → [MC Dropout] → N forward passes → Statistics
-                                           ↓
-                              ┌─────────────────────────┐
-                              │  Mean Prediction        │
-                              │  Std Dev (Uncertainty)  │
-                              │  Predictive Entropy     │
-                              │  Confidence Intervals   │
-                              └─────────────────────────┘
-```
-
-**Calibration Metrics:**
-- **ECE** (Expected Calibration Error): <0.10 (well-calibrated)
-- **MCE** (Maximum Calibration Error): Worst-case miscalibration
-- **Brier Score**: Overall calibration + sharpness
-- **Selective Accuracy**: Accuracy at different coverage levels
-
-**Clinical Safety:**
-- High-risk predictions require high confidence (>0.90)
-- Abstain from prediction when uncertainty is high
-- Provide uncertainty estimates to clinicians
-
----
-
-### Phase 5: Comprehensive XAI Evaluation
-
-**File:** `phase5_v2.py`
-
-**XAI Metrics:**
+**XAI Metrics Evaluated:**
 
 1. **Concept Completeness** (Yeh et al., NeurIPS 2020)
    - Measures: How much do concepts explain predictions?
-   - Formula: R²(f(concepts), predictions)
-   - Target: >0.80
+   - Target: >0.80 (concepts explain 80%+ of predictions)
 
 2. **Intervention Accuracy** (Koh et al., ICML 2020)
-   - Measures: Does replacing predicted concepts with GT improve performance?
-   - Formula: Acc(GT concepts) - Acc(predicted concepts)
-   - Target: >0.05
+   - Measures: Does replacing predicted concepts with ground truth improve performance?
+   - Target: >0.05 gain (concepts are causally important)
 
-3. **TCAV** (Kim et al., ICML 2018)
-   - Measures: Do concepts have directional influence on predictions?
-   - Formula: Correlation between concept activations and predictions
-   - Target: >0.65
+3. **TCAV** - Testing with Concept Activation Vectors (Kim et al., ICML 2018)
+   - Measures: Are concepts meaningfully represented?
+   - Target: >0.65 (concepts correlate with diagnoses)
 
 4. **ConceptSHAP** (Yeh et al., NeurIPS 2020)
-   - Measures: Shapley value of each concept's contribution
-   - Formula: E[f(S ∪ {i}) - f(S)] over all subsets S
-   - Target: >0.01
+   - Measures: Shapley values for concept importance
+   - Target: Non-zero values (concepts contribute to predictions)
 
-**Comparison:**
+5. **Faithfulness**
+   - Measures: Do concept predictions correlate with diagnosis predictions?
+   - Target: >0.60 correlation
 
-| Metric | Previous (v1) | Current (v2) | Target | Status |
-|--------|---------------|--------------|--------|--------|
-| Completeness | 0.0653 | **>0.80** | >0.80 | ✅ |
-| Intervention | -0.0007 | **>0.05** | >0.05 | ✅ |
-| TCAV | 0.7500 | **>0.65** | >0.65 | ✅ |
-| ConceptSHAP | ~0 | **>0.01** | >0.01 | ✅ |
+**Output:**
+- Comprehensive interpretability scorecard
+- Proves CBM architecture is both interpretable AND accurate
+
+---
+
+### Phase 5: Ablation Studies + SOTA Comparison
+
+**File:** `phase5_v2.py`
+
+**Purpose:** Validate each component's contribution and compare against state-of-the-art
+
+**Section A: ABLATION STUDIES**
+
+Validate contribution by removing components:
+1. **w/o RAG** (Phase 3 → Phase 2)
+   - Shows RAG contribution to performance
+2. **w/o GraphSAGE** (Phase 2 → Phase 1)
+   - Shows ontology encoding contribution
+3. **w/o Concept Bottleneck** (ShifaMind → BioClinicalBERT)
+   - Shows interpretability vs performance tradeoff
+
+**Section B: SOTA COMPARISON**
+
+Compare against state-of-the-art baselines:
+1. **BioClinicalBERT** baseline (no CBM)
+2. **PubMedBERT** baseline
+3. **BioLinkBERT** baseline (optional)
+4. **Few-shot GPT-4** (optional, if API available)
+
+**Section C: COMPREHENSIVE ANALYSIS**
+
+- Performance vs Interpretability tradeoff table
+- Computational cost comparison
+- Statistical significance tests
+- Error analysis
+
+**Expected Finding:**
+ShifaMind achieves **competitive performance + full interpretability**
+SOTA baselines have similar/higher performance but **zero interpretability**
 
 ---
 
@@ -349,26 +348,36 @@ pip install sentence-transformers faiss-cpu
 - Evidence corpus: ~100 passages (clinical knowledge + MIMIC prototypes)
 - RAG contribution: gated at 40%
 
-### Phase 4: Uncertainty
+### Phase 4: XAI Evaluation
 
 ```bash
 python 08_ShifaMind/phase4_v2.py
 ```
 
 **Output:**
-- Checkpoint: `checkpoints/phase4_v2/phase4_v2_best.pt`
-- Uncertainty: `results/phase4_v2/test_probs_std.npy`
-- Results: `results/phase4_v2/results.json`
+- XAI Results: `results/phase4_v2/xai_results.json`
 
-### Phase 5: XAI Evaluation
+**Expected XAI Metrics:**
+- Concept Completeness: >0.80
+- Intervention Accuracy: >0.05 gain
+- TCAV: >0.65
+- ConceptSHAP: >0.01
+- Faithfulness: >0.60
+
+### Phase 5: Ablation + SOTA Comparison
 
 ```bash
 python 08_ShifaMind/phase5_v2.py
 ```
 
 **Output:**
-- XAI Results: `results/phase5_v2/xai_evaluation_results.json`
-- Comparison: `results/phase5_v2/xai_comparison.csv`
+- Ablation Results: `results/phase5_v2/ablation_sota_results.json`
+- SOTA Checkpoints: `checkpoints/sota_baselines/`
+
+**Expected Results:**
+- Each component (RAG, GraphSAGE, CBM) contributes to performance
+- ShifaMind achieves best interpretability + competitive performance
+- SOTA baselines have similar F1 but zero interpretability
 
 ---
 
