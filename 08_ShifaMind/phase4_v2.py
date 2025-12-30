@@ -361,18 +361,20 @@ class ShifaMindPhase3Fixed(nn.Module):
         fused_states = fused_representation.unsqueeze(1).expand(-1, hidden_states.shape[1], -1)
 
         # Concept bottleneck with ground truth concepts
+        # Weight concept embeddings by ground truth BEFORE cross-attention
         bert_concepts = concept_embeddings.unsqueeze(0).expand(batch_size, -1, -1)
+
+        # Mask concepts: only ground truth concepts contribute
+        gt_concepts = ground_truth_concepts.unsqueeze(-1)  # [batch, num_concepts, 1]
+        weighted_concepts = bert_concepts * gt_concepts  # [batch, num_concepts, hidden]
+
         concept_context, _ = self.cross_attention(
             query=fused_states,
-            key=bert_concepts,
-            value=bert_concepts
+            key=weighted_concepts,
+            value=weighted_concepts
         )
 
-        # Weight by ground truth concepts
-        gt_concepts = ground_truth_concepts.unsqueeze(-1)
-        weighted_context = concept_context * gt_concepts
-
-        pooled_context = weighted_context.mean(dim=1)
+        pooled_context = concept_context.mean(dim=1)
 
         gate_input = torch.cat([fused_representation, pooled_context], dim=-1)
         gate = self.gate_net(gate_input)
