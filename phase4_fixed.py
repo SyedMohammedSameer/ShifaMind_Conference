@@ -77,20 +77,30 @@ print("="*80)
 
 # ⚠️ IMPORTANT: Update this path to match YOUR Google Drive structure
 # The script expects these checkpoint files to exist from running Phase 1 & 2:
-#   - checkpoints/phase1_fixed/phase1_fixed_final.pt
+#   - checkpoints/phase1_fixed/phase1_fixed_best.pt (or phase1_fixed_final.pt)
 #   - checkpoints/phase2_fixed/phase2_fixed_best.pt (or phase2_fixed_final.pt)
 BASE_PATH = Path('/content/drive/MyDrive/ShifaMind')
 OUTPUT_BASE = BASE_PATH / '07_ShifaMind'
 
 # Input paths
 SHARED_DATA_PATH = OUTPUT_BASE / 'shared_data'
-PHASE1_FIXED_CHECKPOINT = OUTPUT_BASE / 'checkpoints/phase1_fixed/phase1_fixed_final.pt'
+
+# Try both possible Phase 1 checkpoint names
+PHASE1_FIXED_CHECKPOINT_BEST = OUTPUT_BASE / 'checkpoints/phase1_fixed/phase1_fixed_best.pt'
+PHASE1_FIXED_CHECKPOINT_FINAL = OUTPUT_BASE / 'checkpoints/phase1_fixed/phase1_fixed_final.pt'
 
 # Try both possible Phase 2 checkpoint names
 PHASE2_FIXED_CHECKPOINT_BEST = OUTPUT_BASE / 'checkpoints/phase2_fixed/phase2_fixed_best.pt'
 PHASE2_FIXED_CHECKPOINT_FINAL = OUTPUT_BASE / 'checkpoints/phase2_fixed/phase2_fixed_final.pt'
 
-# Check which Phase 2 checkpoint exists
+# Check which checkpoints exist
+if PHASE1_FIXED_CHECKPOINT_BEST.exists():
+    PHASE1_FIXED_CHECKPOINT = PHASE1_FIXED_CHECKPOINT_BEST
+elif PHASE1_FIXED_CHECKPOINT_FINAL.exists():
+    PHASE1_FIXED_CHECKPOINT = PHASE1_FIXED_CHECKPOINT_FINAL
+else:
+    PHASE1_FIXED_CHECKPOINT = PHASE1_FIXED_CHECKPOINT_BEST  # Default, will error later with helpful message
+
 if PHASE2_FIXED_CHECKPOINT_BEST.exists():
     PHASE2_FIXED_CHECKPOINT = PHASE2_FIXED_CHECKPOINT_BEST
 elif PHASE2_FIXED_CHECKPOINT_FINAL.exists():
@@ -140,11 +150,10 @@ class AdaptiveGatedCrossAttention(nn.Module):
         self.value = nn.Linear(hidden_size, hidden_size)
         self.out_proj = nn.Linear(hidden_size, hidden_size)
 
-        # Adaptive gate
+        # Adaptive gate (4 layers, input = hidden*2 + 1 for scalar relevance)
         self.gate_net = nn.Sequential(
-            nn.Linear(hidden_size * 3, hidden_size),
+            nn.Linear(hidden_size * 2 + 1, hidden_size),
             nn.ReLU(),
-            nn.Dropout(dropout),
             nn.Linear(hidden_size, 1),
             nn.Sigmoid()
         )
@@ -407,9 +416,10 @@ print("="*80)
 if not PHASE1_FIXED_CHECKPOINT.exists():
     print(f"\n❌ ERROR: Phase 1 checkpoint not found!")
     print(f"   Expected: {PHASE1_FIXED_CHECKPOINT}")
+    print(f"   Also tried: {PHASE1_FIXED_CHECKPOINT_FINAL if PHASE1_FIXED_CHECKPOINT == PHASE1_FIXED_CHECKPOINT_BEST else PHASE1_FIXED_CHECKPOINT_BEST}")
     print(f"\n📋 Required files from Phase 1 & 2:")
-    print(f"   1. Run phase1_fixed.py to create: checkpoints/phase1_fixed/phase1_fixed_final.pt")
-    print(f"   2. Run phase2_fixed.py to create: checkpoints/phase2_fixed/phase2_fixed_best.pt")
+    print(f"   1. Run phase1_fixed.py to create: checkpoints/phase1_fixed/phase1_fixed_best.pt (or phase1_fixed_final.pt)")
+    print(f"   2. Run phase2_fixed.py to create: checkpoints/phase2_fixed/phase2_fixed_best.pt (or phase2_fixed_final.pt)")
     print(f"\n⚠️  Make sure these files exist in your Google Drive at:")
     print(f"   {OUTPUT_BASE / 'checkpoints'}")
     raise FileNotFoundError(f"Phase 1 checkpoint not found: {PHASE1_FIXED_CHECKPOINT}")
@@ -419,7 +429,7 @@ if not PHASE2_FIXED_CHECKPOINT.exists():
     print(f"   Expected: {PHASE2_FIXED_CHECKPOINT}")
     print(f"   Also tried: {PHASE2_FIXED_CHECKPOINT_FINAL if PHASE2_FIXED_CHECKPOINT == PHASE2_FIXED_CHECKPOINT_BEST else PHASE2_FIXED_CHECKPOINT_BEST}")
     print(f"\n📋 Required files from Phase 1 & 2:")
-    print(f"   1. Run phase1_fixed.py to create: checkpoints/phase1_fixed/phase1_fixed_final.pt")
+    print(f"   1. Run phase1_fixed.py to create: checkpoints/phase1_fixed/phase1_fixed_best.pt (or phase1_fixed_final.pt)")
     print(f"   2. Run phase2_fixed.py to create: checkpoints/phase2_fixed/phase2_fixed_best.pt (or phase2_fixed_final.pt)")
     print(f"\n⚠️  Make sure these files exist in your Google Drive at:")
     print(f"   {OUTPUT_BASE / 'checkpoints'}")
