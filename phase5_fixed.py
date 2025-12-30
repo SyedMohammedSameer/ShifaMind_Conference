@@ -73,12 +73,26 @@ print("\n" + "="*80)
 print("⚙️  CONFIGURATION")
 print("="*80)
 
+# ⚠️ IMPORTANT: Update this path to match YOUR Google Drive structure
+# The script expects this checkpoint file to exist from running Phase 2:
+#   - checkpoints/phase2_fixed/phase2_fixed_best.pt (or phase2_fixed_final.pt)
 BASE_PATH = Path('/content/drive/MyDrive/ShifaMind')
 OUTPUT_BASE = BASE_PATH / '07_ShifaMind'
 
 # Input paths
 SHARED_DATA_PATH = OUTPUT_BASE / 'shared_data'
-PHASE2_FIXED_CHECKPOINT = OUTPUT_BASE / 'checkpoints/phase2_fixed/phase2_fixed_best.pt'
+
+# Try both possible Phase 2 checkpoint names
+PHASE2_FIXED_CHECKPOINT_BEST = OUTPUT_BASE / 'checkpoints/phase2_fixed/phase2_fixed_best.pt'
+PHASE2_FIXED_CHECKPOINT_FINAL = OUTPUT_BASE / 'checkpoints/phase2_fixed/phase2_fixed_final.pt'
+
+# Check which Phase 2 checkpoint exists
+if PHASE2_FIXED_CHECKPOINT_BEST.exists():
+    PHASE2_FIXED_CHECKPOINT = PHASE2_FIXED_CHECKPOINT_BEST
+elif PHASE2_FIXED_CHECKPOINT_FINAL.exists():
+    PHASE2_FIXED_CHECKPOINT = PHASE2_FIXED_CHECKPOINT_FINAL
+else:
+    PHASE2_FIXED_CHECKPOINT = PHASE2_FIXED_CHECKPOINT_BEST  # Default, will error later with helpful message
 
 # Output paths
 RESULTS_PATH = OUTPUT_BASE / 'results/phase5_fixed'
@@ -268,6 +282,19 @@ def train_and_evaluate(model, train_loader, val_loader, test_loader, model_name,
 print("\n" + "="*80)
 print("📥 LOADING PHASE 2 FIXED RESULT")
 print("="*80)
+
+# Check if checkpoint file exists
+if not PHASE2_FIXED_CHECKPOINT.exists():
+    print(f"\n❌ ERROR: Phase 2 checkpoint not found!")
+    print(f"   Expected: {PHASE2_FIXED_CHECKPOINT}")
+    print(f"   Also tried: {PHASE2_FIXED_CHECKPOINT_FINAL if PHASE2_FIXED_CHECKPOINT == PHASE2_FIXED_CHECKPOINT_BEST else PHASE2_FIXED_CHECKPOINT_BEST}")
+    print(f"\n📋 Required file from Phase 2:")
+    print(f"   Run phase2_fixed.py to create: checkpoints/phase2_fixed/phase2_fixed_best.pt (or phase2_fixed_final.pt)")
+    print(f"\n⚠️  Make sure this file exists in your Google Drive at:")
+    print(f"   {OUTPUT_BASE / 'checkpoints/phase2_fixed'}")
+    raise FileNotFoundError(f"Phase 2 checkpoint not found: {PHASE2_FIXED_CHECKPOINT}")
+
+print(f"✅ Found Phase 2: {PHASE2_FIXED_CHECKPOINT.name}")
 
 phase2_fixed_ckpt = torch.load(PHASE2_FIXED_CHECKPOINT, map_location=device, weights_only=False)
 phase2_fixed_f1 = phase2_fixed_ckpt.get('macro_f1', 0.0)
