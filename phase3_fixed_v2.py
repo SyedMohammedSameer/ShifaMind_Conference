@@ -277,6 +277,7 @@ class ShifaMindPhase2Fixed(nn.Module):
         self.phase1_model = phase1_model
         self.tokenizer = tokenizer
         self.rag_system = rag_system
+        self.hidden_size = phase1_model.hidden_size  # Add hidden_size attribute
         self.rag_fusion = AdaptiveRAGFusion(hidden_size=phase1_model.hidden_size)
 
     def forward(self, input_ids, attention_mask, rag_texts=None, relevance_scores=None):
