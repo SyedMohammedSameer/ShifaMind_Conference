@@ -595,7 +595,13 @@ def generate_citation_labels(df, evidence_db):
 
     for _, row in df.iterrows():
         # Get diagnosis for this sample
-        sample_diagnoses = [code for code in TARGET_CODES if row[code] == 1]
+        # Handle both formats: individual columns or 'labels' list
+        if 'labels' in row and isinstance(row['labels'], list):
+            # Labels is a list [J189_label, I5023_label, A419_label, K8000_label]
+            sample_diagnoses = [code for i, code in enumerate(TARGET_CODES) if row['labels'][i] == 1]
+        else:
+            # Individual columns
+            sample_diagnoses = [code for code in TARGET_CODES if code in df.columns and row[code] == 1]
 
         # Mark relevant evidence passages (first MAX_EVIDENCE_PASSAGES)
         labels = []
@@ -621,10 +627,19 @@ def generate_action_labels(df):
     action_labels = []
     for _, row in df.iterrows():
         labels = [0] * len(CLINICAL_ACTIONS)
-        for code in TARGET_CODES:
-            if row[code] == 1:
-                for action_idx in action_mapping[code]:
-                    labels[action_idx] = 1
+
+        # Handle both formats
+        if 'labels' in row and isinstance(row['labels'], list):
+            for i, code in enumerate(TARGET_CODES):
+                if row['labels'][i] == 1:
+                    for action_idx in action_mapping[code]:
+                        labels[action_idx] = 1
+        else:
+            for code in TARGET_CODES:
+                if code in df.columns and row[code] == 1:
+                    for action_idx in action_mapping[code]:
+                        labels[action_idx] = 1
+
         action_labels.append(labels)
 
     return np.array(action_labels)
