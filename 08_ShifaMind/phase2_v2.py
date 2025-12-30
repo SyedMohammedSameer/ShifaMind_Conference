@@ -800,8 +800,10 @@ results = {
 with open(RESULTS_PATH / 'results.json', 'w') as f:
     json.dump(results, f, indent=2)
 
-# Save graph
-nx.write_gpickle(ontology_graph, CONCEPT_STORE_PATH / 'medical_ontology.gpickle')
+# Save graph using pickle
+import pickle as pkl
+with open(CONCEPT_STORE_PATH / 'medical_ontology.gpickle', 'wb') as f:
+    pkl.dump(ontology_graph, f)
 
 print(f"\n💾 Results saved to: {RESULTS_PATH / 'results.json'}")
 print(f"💾 Best model saved to: {CHECKPOINT_PATH / 'phase2_v2_best.pt'}")
