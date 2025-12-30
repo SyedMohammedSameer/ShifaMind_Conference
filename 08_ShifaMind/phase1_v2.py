@@ -89,20 +89,31 @@ print("\n" + "="*80)
 print("⚙️  CONFIGURATION")
 print("="*80)
 
-# Local environment path
-BASE_PATH = Path('/home/user/ShifaMind_Conference')
+# Google Drive path (Colab environment)
+BASE_PATH = Path('/content/drive/MyDrive/ShifaMind')
 OUTPUT_BASE = BASE_PATH / '08_ShifaMind'
+
+# Use existing shared_data if available
+EXISTING_SHARED_DATA = BASE_PATH / '03_Models/shared_data'
+if EXISTING_SHARED_DATA.exists():
+    SHARED_DATA_PATH = EXISTING_SHARED_DATA
+    USE_EXISTING_SPLITS = True
+    print("✅ Using existing shared_data from 03_Models/")
+else:
+    SHARED_DATA_PATH = OUTPUT_BASE / 'shared_data'
+    SHARED_DATA_PATH.mkdir(parents=True, exist_ok=True)
+    USE_EXISTING_SPLITS = False
 
 # Output paths
 CHECKPOINT_PATH = OUTPUT_BASE / 'checkpoints/phase1_v2'
-SHARED_DATA_PATH = OUTPUT_BASE / 'shared_data'
 RESULTS_PATH = OUTPUT_BASE / 'results/phase1_v2'
 CONCEPT_STORE_PATH = OUTPUT_BASE / 'concept_store'
 
 # Create directories
-for path in [CHECKPOINT_PATH, SHARED_DATA_PATH, RESULTS_PATH, CONCEPT_STORE_PATH]:
+for path in [CHECKPOINT_PATH, RESULTS_PATH, CONCEPT_STORE_PATH]:
     path.mkdir(parents=True, exist_ok=True)
 
+print(f"📁 Base Path: {BASE_PATH}")
 print(f"📁 Checkpoints: {CHECKPOINT_PATH}")
 print(f"📁 Shared Data: {SHARED_DATA_PATH}")
 print(f"📁 Results: {RESULTS_PATH}")
@@ -154,81 +165,79 @@ print("📊 DATA LOADING & CONCEPT LABELING")
 print("="*80)
 
 # ============================================================================
-# LOAD REAL MIMIC-IV DATA
+# LOAD DATA (Use existing splits if available)
 # ============================================================================
 
 print("Loading MIMIC-IV data...")
 
-# IMPORTANT: Set this to your MIMIC-IV data path
-# Expected CSV format: columns = ['text', 'J189', 'I5023', 'A419', 'K8000']
-MIMIC_DATA_PATH = BASE_PATH / 'mimic_dx_data.csv'
+# Check if existing preprocessed splits are available
+if USE_EXISTING_SPLITS and (SHARED_DATA_PATH / 'train_split.pkl').exists():
+    print("📥 Loading existing preprocessed splits from 03_Models/shared_data/")
 
-def load_mimic_data():
-    """
-    Load REAL MIMIC-IV data from CSV
+    with open(SHARED_DATA_PATH / 'train_split.pkl', 'rb') as f:
+        df_train = pickle.load(f)
+    with open(SHARED_DATA_PATH / 'val_split.pkl', 'rb') as f:
+        df_val = pickle.load(f)
+    with open(SHARED_DATA_PATH / 'test_split.pkl', 'rb') as f:
+        df_test = pickle.load(f)
 
-    Expected CSV format:
-    - text: Clinical note text
-    - J189: Binary label (0/1) for Pneumonia
-    - I5023: Binary label (0/1) for Heart Failure
-    - A419: Binary label (0/1) for Sepsis
-    - K8000: Binary label (0/1) for Cholecystitis
+    print(f"✅ Loaded existing splits:")
+    print(f"   Train: {len(df_train):,}")
+    print(f"   Val: {len(df_val):,}")
+    print(f"   Test: {len(df_test):,}")
 
-    If you don't have this file, you need to preprocess MIMIC-IV:
-    1. Load discharge summaries from MIMIC-IV-Note
-    2. Link to ICD-10 codes from MIMIC-IV hosp/diagnoses_icd
-    3. Filter for target diagnoses
-    4. Save as CSV
-    """
-    if MIMIC_DATA_PATH.exists():
-        print(f"📥 Loading data from: {MIMIC_DATA_PATH}")
-        df = pd.read_csv(MIMIC_DATA_PATH)
+    # Ensure labels column exists
+    if 'labels' not in df_train.columns:
+        print("   Creating labels column...")
+        df_train['labels'] = df_train[TARGET_CODES].values.tolist()
+        df_val['labels'] = df_val[TARGET_CODES].values.tolist()
+        df_test['labels'] = df_test[TARGET_CODES].values.tolist()
 
-        # Validate columns
-        required_cols = ['text'] + TARGET_CODES
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            raise ValueError(f"Missing required columns: {missing_cols}")
-
-        # Remove rows with missing text
-        df = df.dropna(subset=['text'])
-
-        # Ensure labels are binary
-        for code in TARGET_CODES:
-            df[code] = df[code].fillna(0).astype(int)
-
-        print(f"✅ Loaded {len(df):,} clinical notes from MIMIC-IV")
-        print(f"   Label distribution:")
-        for code in TARGET_CODES:
-            count = df[code].sum()
-            pct = count / len(df) * 100
+    # Show label distribution
+    print(f"\n   Label distribution (train set):")
+    for code in TARGET_CODES:
+        if code in df_train.columns:
+            count = df_train[code].sum()
+            pct = count / len(df_train) * 100
             print(f"   - {code} ({ICD_DESCRIPTIONS[code]}): {count} ({pct:.1f}%)")
 
-        return df
-    else:
-        print(f"❌ ERROR: MIMIC data file not found at: {MIMIC_DATA_PATH}")
-        print(f"\n⚠️  Please create this CSV file with your MIMIC-IV data.")
-        print(f"\nExpected format:")
-        print(f"   text,J189,I5023,A419,K8000")
-        print(f"   \"Patient presents with...\",1,0,0,0")
-        print(f"   \"Elderly patient admitted...\",0,1,0,0")
-        print(f"\nOR update MIMIC_DATA_PATH in the code to point to your data file.")
-        raise FileNotFoundError(f"MIMIC data not found: {MIMIC_DATA_PATH}")
+else:
+    print("📥 Creating new data splits from MIMIC-IV...")
 
-df = load_mimic_data()
+    # Load from CSV
+    MIMIC_DATA_PATH = BASE_PATH / 'mimic_dx_data.csv'
 
-# Create label array
-df['labels'] = df[TARGET_CODES].values.tolist()
+    if not MIMIC_DATA_PATH.exists():
+        raise FileNotFoundError(
+            f"❌ No existing splits found and CSV not found at: {MIMIC_DATA_PATH}\n"
+            f"Please either:\n"
+            f"1. Use existing splits in {BASE_PATH}/03_Models/shared_data/, OR\n"
+            f"2. Create mimic_dx_data.csv using prepare_mimic_data.py"
+        )
 
-# Split data
-train_idx, temp_idx = train_test_split(range(len(df)), test_size=0.3, random_state=SEED)
-val_idx, test_idx = train_test_split(temp_idx, test_size=0.5, random_state=SEED)
+    df = pd.read_csv(MIMIC_DATA_PATH)
 
-df_train = df.iloc[train_idx].reset_index(drop=True)
-df_val = df.iloc[val_idx].reset_index(drop=True)
-df_test = df.iloc[test_idx].reset_index(drop=True)
+    # Validate columns
+    required_cols = ['text'] + TARGET_CODES
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
 
-print(f"✅ Split: Train={len(df_train):,}, Val={len(df_val):,}, Test={len(df_test):,}")
+    df = df.dropna(subset=['text'])
+    for code in TARGET_CODES:
+        df[code] = df[code].fillna(0).astype(int)
+
+    df['labels'] = df[TARGET_CODES].values.tolist()
+
+    # Split data
+    train_idx, temp_idx = train_test_split(range(len(df)), test_size=0.3, random_state=SEED)
+    val_idx, test_idx = train_test_split(temp_idx, test_size=0.5, random_state=SEED)
+
+    df_train = df.iloc[train_idx].reset_index(drop=True)
+    df_val = df.iloc[val_idx].reset_index(drop=True)
+    df_test = df.iloc[test_idx].reset_index(drop=True)
+
+    print(f"✅ Created splits: Train={len(df_train):,}, Val={len(df_val):,}, Test={len(df_test):,}")
 
 # Generate concept labels (keyword-based)
 print("\nGenerating concept labels...")
