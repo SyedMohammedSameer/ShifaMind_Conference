@@ -312,8 +312,61 @@ class SimpleRAG:
 rag = SimpleRAG()
 rag.build_index(evidence_corpus)
 
-# Load Phase 3 model
-from phase3_v2_fixed import ShifaMindPhase3Fixed
+# Load Phase 3 model class (defined inline to avoid import issues)
+class ShifaMindPhase3Fixed(nn.Module):
+    """ShifaMind with FIXED RAG integration"""
+    def __init__(self, base_model, rag_retriever, num_concepts, num_diagnoses, hidden_size=768):
+        super().__init__()
+        self.bert = base_model
+        self.rag = rag_retriever
+        self.hidden_size = hidden_size
+        self.num_concepts = num_concepts
+        self.num_diagnoses = num_diagnoses
+
+        if rag_retriever is not None:
+            rag_dim = 384
+            self.rag_projection = nn.Linear(rag_dim, hidden_size)
+        else:
+            self.rag_projection = None
+
+        self.rag_gate = nn.Sequential(nn.Linear(hidden_size * 2, hidden_size), nn.Sigmoid())
+        self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_size, num_heads=8, dropout=0.1, batch_first=True)
+        self.gate_net = nn.Sequential(nn.Linear(hidden_size * 2, hidden_size), nn.Sigmoid())
+        self.layer_norm = nn.LayerNorm(hidden_size)
+        self.concept_head = nn.Linear(hidden_size, num_concepts)
+        self.diagnosis_head = nn.Linear(hidden_size, num_diagnoses)
+
+    def forward(self, input_ids, attention_mask, concept_embeddings, input_texts=None):
+        batch_size = input_ids.shape[0]
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        hidden_states = outputs.last_hidden_state
+        pooled_bert = hidden_states.mean(dim=1)
+
+        if self.rag is not None and input_texts is not None:
+            rag_texts = [self.rag.retrieve(text) for text in input_texts]
+            rag_embeddings = []
+            for rag_text in rag_texts:
+                if rag_text:
+                    emb = self.rag.encoder.encode([rag_text], convert_to_numpy=True)[0]
+                else:
+                    emb = np.zeros(384)
+                rag_embeddings.append(emb)
+            rag_embeddings = torch.tensor(np.array(rag_embeddings), dtype=torch.float32).to(pooled_bert.device)
+            rag_context = self.rag_projection(rag_embeddings)
+            gate_input = torch.cat([pooled_bert, rag_context], dim=-1)
+            gate = self.rag_gate(gate_input) * 0.4
+            fused_representation = pooled_bert + gate * rag_context
+        else:
+            fused_representation = pooled_bert
+
+        fused_states = fused_representation.unsqueeze(1).expand(-1, hidden_states.shape[1], -1)
+        bert_concepts = concept_embeddings.unsqueeze(0).expand(batch_size, -1, -1)
+        concept_context, _ = self.cross_attention(query=fused_states, key=bert_concepts, value=bert_concepts)
+        pooled_context = concept_context.mean(dim=1)
+        gate_input = torch.cat([fused_representation, pooled_context], dim=-1)
+        gate = self.gate_net(gate_input)
+        bottleneck_output = self.layer_norm(gate * pooled_context)
+        return {'logits': self.diagnosis_head(bottleneck_output), 'concept_logits': self.concept_head(fused_representation)}
 
 base_model = AutoModel.from_pretrained('emilyalsentzer/Bio_ClinicalBERT').to(device)
 phase3_model = ShifaMindPhase3Fixed(
