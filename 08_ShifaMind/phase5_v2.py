@@ -647,14 +647,14 @@ N183"""
             prompt = few_shot_examples + f"\n\nText: \"{text[:500]}\"\n"
 
             try:
-                response = client.chat.completions.create(
+                # GPT-5 uses the new responses API (not chat completions)
+                response = client.responses.create(
                     model=GPT_MODEL,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_completion_tokens=20,  # GPT-5 uses max_completion_tokens instead of max_tokens
-                    temperature=0
+                    input=prompt  # GPT-5 uses 'input' instead of 'messages'
+                    # Note: temperature is not supported (only default value 1)
                 )
 
-                prediction_text = response.choices[0].message.content.strip()
+                prediction_text = response.output_text.strip()  # GPT-5 uses output_text instead of choices
 
                 # Debug: Store first 5 responses for inspection
                 if i < 5:
