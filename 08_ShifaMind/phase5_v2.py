@@ -587,11 +587,11 @@ except Exception as e:
     sota_results['biolinkbert'] = {'macro_f1': 0.0, 'note': 'not_available'}
 
 # ----------------------------------------------------------------------------
-# SOTA 4: Few-shot GPT-4 (Optional)
+# SOTA 4: Few-shot GPT-4o/GPT-5 (Optional)
 # ----------------------------------------------------------------------------
 
 print("\n" + "-"*80)
-print("🏆 SOTA 4: Few-shot GPT-4 (Optional)")
+print("🏆 SOTA 4: Few-shot GPT-4o/GPT-5 (Optional)")
 print("-"*80)
 
 # Check if OpenAI API key is available
@@ -599,16 +599,20 @@ import os
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
 if OPENAI_API_KEY:
-    print("🔑 OpenAI API key found - running GPT-4 few-shot evaluation...")
+    print("🔑 OpenAI API key found - running GPT few-shot evaluation...")
     print("⚠️  This will make API calls and may incur costs (~$2-5 for test set)")
 
     try:
-        import openai
-        openai.api_key = OPENAI_API_KEY
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+
+        # Model selection: Try GPT-5 first, fall back to GPT-4o
+        GPT_MODEL = "gpt-4o"  # Change to "gpt-5" if available
+        print(f"📝 Using model: {GPT_MODEL}")
 
         # Few-shot prompt with 3 examples
         few_shot_examples = """
-You are a medical diagnosis assistant. Given a clinical note, predict the diagnoses.
+You are a medical diagnosis assistant. Given a clinical note, predict the diagnoses using ICD-10 codes.
 
 Example 1:
 Text: "Patient presents with productive cough, fever, and consolidation on chest X-ray."
@@ -621,22 +625,23 @@ Diagnoses: I500 (Heart failure)
 Example 3:
 Text: "Patient with altered mental status, hyperglycemia (glucose 450), and ketones."
 Diagnoses: E119 (Type 2 diabetes without complications)
-"""
 
-        print("📝 Running GPT-4 on test set (this may take 10-15 mins)...")
+Respond with ONLY the ICD-10 code(s), one per line."""
 
-        gpt4_predictions = []
+        print(f"📝 Running {GPT_MODEL} on test set (this may take 10-15 mins)...")
+
+        gpt_predictions = []
         test_texts = df_test['text'].tolist()
         test_labels = df_test['labels'].tolist()
 
         code_to_idx = {code: idx for idx, code in enumerate(TARGET_CODES)}
 
-        for i, text in enumerate(tqdm(test_texts[:100], desc="GPT-4 Few-shot")):  # Limit to 100 for cost
+        for i, text in enumerate(tqdm(test_texts[:100], desc=f"{GPT_MODEL} Few-shot")):  # Limit to 100 for cost
             prompt = few_shot_examples + f"\n\nNow predict for:\nText: \"{text[:500]}...\"\nDiagnoses:"
 
             try:
-                response = openai.ChatCompletion.create(
-                    model="gpt-4",
+                response = client.chat.completions.create(
+                    model=GPT_MODEL,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=50,
                     temperature=0
@@ -650,39 +655,43 @@ Diagnoses: E119 (Type 2 diabetes without complications)
                     if code in prediction_text:
                         pred_vector[code_to_idx[code]] = 1.0
 
-                gpt4_predictions.append(pred_vector)
+                gpt_predictions.append(pred_vector)
             except Exception as e:
-                print(f"   Error on sample {i}: {str(e)}")
-                gpt4_predictions.append([0.0] * len(TARGET_CODES))
+                if i == 0:  # Only print first error in detail
+                    print(f"\n   ⚠️  Error on sample {i}: {str(e)}")
+                    print(f"   (Suppressing further errors...)")
+                gpt_predictions.append([0.0] * len(TARGET_CODES))
 
         # Calculate metrics
-        gpt4_preds = np.array(gpt4_predictions)
-        gpt4_labels = np.array(test_labels[:100])
+        gpt_preds = np.array(gpt_predictions)
+        gpt_labels = np.array(test_labels[:100])
 
-        gpt4_f1 = f1_score(gpt4_labels, gpt4_preds, average='macro', zero_division=0)
-        gpt4_acc = accuracy_score(gpt4_labels.argmax(axis=1) if len(gpt4_labels.shape) > 1 else gpt4_labels,
-                                   gpt4_preds.argmax(axis=1) if len(gpt4_preds.shape) > 1 else gpt4_preds)
+        gpt_f1 = f1_score(gpt_labels, gpt_preds, average='macro', zero_division=0)
+        gpt_acc = accuracy_score(gpt_labels.argmax(axis=1) if len(gpt_labels.shape) > 1 else gpt_labels,
+                                   gpt_preds.argmax(axis=1) if len(gpt_preds.shape) > 1 else gpt_preds)
 
-        sota_results['gpt4_fewshot'] = {
-            'macro_f1': gpt4_f1,
-            'accuracy': gpt4_acc,
+        sota_results['gpt_fewshot'] = {
+            'macro_f1': gpt_f1,
+            'accuracy': gpt_acc,
+            'model': GPT_MODEL,
             'note': 'few_shot_3_examples_100_samples'
         }
 
         print(f"\n📊 Results (100 test samples):")
-        print(f"   Macro F1: {gpt4_f1:.4f}")
-        print(f"   Δ from ShifaMind: {gpt4_f1 - full_f1:+.4f}")
+        print(f"   Model: {GPT_MODEL}")
+        print(f"   Macro F1: {gpt_f1:.4f}")
+        print(f"   Δ from ShifaMind: {gpt_f1 - full_f1:+.4f}")
 
     except ImportError:
         print("⚠️  OpenAI package not installed. Install with: pip install openai")
-        sota_results['gpt4_fewshot'] = {'macro_f1': 0.0, 'note': 'openai_not_installed'}
+        sota_results['gpt_fewshot'] = {'macro_f1': 0.0, 'note': 'openai_not_installed'}
     except Exception as e:
-        print(f"⚠️  Error running GPT-4: {str(e)}")
-        sota_results['gpt4_fewshot'] = {'macro_f1': 0.0, 'note': f'error: {str(e)}'}
+        print(f"⚠️  Error running GPT: {str(e)}")
+        sota_results['gpt_fewshot'] = {'macro_f1': 0.0, 'note': f'error: {str(e)}'}
 else:
     print("⚠️  No OpenAI API key found (set OPENAI_API_KEY env variable)")
-    print("   Skipping GPT-4 few-shot evaluation")
-    sota_results['gpt4_fewshot'] = {'macro_f1': 0.0, 'note': 'no_api_key'}
+    print("   Skipping GPT few-shot evaluation")
+    sota_results['gpt_fewshot'] = {'macro_f1': 0.0, 'note': 'no_api_key'}
 
 # ============================================================================
 # SECTION C: COMPREHENSIVE COMPARISON
@@ -757,8 +766,8 @@ comparison_table = {
         'params': '110M',
         'inference_ms': sota_results.get('biolinkbert', {}).get('avg_inference_time_ms', 0)
     },
-    'GPT-4 Few-shot': {
-        'f1': sota_results.get('gpt4_fewshot', {}).get('macro_f1', 0.0),
+    'GPT-4o/GPT-5': {
+        'f1': sota_results.get('gpt_fewshot', {}).get('macro_f1', 0.0),
         'interpretable': 'No',
         'xai_completeness': 'N/A',
         'xai_intervention': 'N/A',
@@ -871,10 +880,11 @@ if 'biolinkbert' in sota_results and 'macro_f1' in sota_results['biolinkbert'] a
     delta = ablation_results['full_model']['macro_f1'] - sota_results['biolinkbert']['macro_f1']
     print(f"     → ShifaMind vs BioLinkBERT: {delta:+.4f}")
 
-if 'gpt4_fewshot' in sota_results and 'macro_f1' in sota_results['gpt4_fewshot'] and sota_results['gpt4_fewshot']['macro_f1'] > 0:
-    print(f"   • GPT-4 Few-shot:    F1 = {sota_results['gpt4_fewshot']['macro_f1']:.4f} (100 samples)")
-    delta = ablation_results['full_model']['macro_f1'] - sota_results['gpt4_fewshot']['macro_f1']
-    print(f"     → ShifaMind vs GPT-4: {delta:+.4f}")
+if 'gpt_fewshot' in sota_results and 'macro_f1' in sota_results['gpt_fewshot'] and sota_results['gpt_fewshot']['macro_f1'] > 0:
+    model_name = sota_results['gpt_fewshot'].get('model', 'GPT-4o')
+    print(f"   • {model_name} Few-shot: F1 = {sota_results['gpt_fewshot']['macro_f1']:.4f} (100 samples)")
+    delta = ablation_results['full_model']['macro_f1'] - sota_results['gpt_fewshot']['macro_f1']
+    print(f"     → ShifaMind vs {model_name}: {delta:+.4f}")
 
 print(f"\n3. PERFORMANCE + INTERPRETABILITY TRADEOFF:")
 print(f"   • ShifaMind achieves BOTH:")
