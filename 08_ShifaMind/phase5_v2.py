@@ -650,7 +650,7 @@ N183"""
                 response = client.chat.completions.create(
                     model=GPT_MODEL,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=20,  # Reduced - we only need short code
+                    max_completion_tokens=20,  # GPT-5 uses max_completion_tokens instead of max_tokens
                     temperature=0
                 )
 
