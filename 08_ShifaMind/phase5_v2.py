@@ -604,29 +604,33 @@ if OPENAI_API_KEY:
 
     try:
         from openai import OpenAI
+        import re
         client = OpenAI(api_key=OPENAI_API_KEY)
 
-        # Model selection: Try GPT-5 first, fall back to GPT-4o
-        GPT_MODEL = "gpt-4o"  # Change to "gpt-5" if available
+        # Model selection: GPT-5 by default
+        GPT_MODEL = "gpt-5"  # Change to "gpt-4o" if GPT-5 not available yet
         print(f"📝 Using model: {GPT_MODEL}")
 
-        # Few-shot prompt with 3 examples
-        few_shot_examples = """
-You are a medical diagnosis assistant. Given a clinical note, predict the diagnoses using ICD-10 codes.
+        # Improved few-shot prompt with stricter format requirements
+        few_shot_examples = """You are a medical diagnosis assistant. Given a clinical note, predict the primary diagnosis using ICD-10 codes.
+
+CRITICAL: Respond with ONLY the ICD-10 code. No explanations, no descriptions, just the code.
 
 Example 1:
 Text: "Patient presents with productive cough, fever, and consolidation on chest X-ray."
-Diagnoses: J189 (Pneumonia)
+J189
 
 Example 2:
 Text: "Patient admitted for management of acute decompensated heart failure with dyspnea and edema."
-Diagnoses: I500 (Heart failure)
+I500
 
 Example 3:
 Text: "Patient with altered mental status, hyperglycemia (glucose 450), and ketones."
-Diagnoses: E119 (Type 2 diabetes without complications)
+E119
 
-Respond with ONLY the ICD-10 code(s), one per line."""
+Example 4:
+Text: "Chronic kidney disease stage 3, patient on medication management."
+N183"""
 
         print(f"📝 Running {GPT_MODEL} on test set (this may take 10-15 mins)...")
 
@@ -636,24 +640,44 @@ Respond with ONLY the ICD-10 code(s), one per line."""
 
         code_to_idx = {code: idx for idx, code in enumerate(TARGET_CODES)}
 
+        # Debug: Track GPT responses
+        debug_responses = []
+
         for i, text in enumerate(tqdm(test_texts[:100], desc=f"{GPT_MODEL} Few-shot")):  # Limit to 100 for cost
-            prompt = few_shot_examples + f"\n\nNow predict for:\nText: \"{text[:500]}...\"\nDiagnoses:"
+            prompt = few_shot_examples + f"\n\nText: \"{text[:500]}\"\n"
 
             try:
                 response = client.chat.completions.create(
                     model=GPT_MODEL,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=50,
+                    max_tokens=20,  # Reduced - we only need short code
                     temperature=0
                 )
 
-                prediction_text = response.choices[0].message.content
+                prediction_text = response.choices[0].message.content.strip()
 
-                # Parse predictions (simple keyword matching)
+                # Debug: Store first 5 responses for inspection
+                if i < 5:
+                    debug_responses.append({
+                        'sample': i,
+                        'response': prediction_text,
+                        'true_label': [TARGET_CODES[j] for j, val in enumerate(test_labels[i]) if val == 1]
+                    })
+
+                # Improved parsing: Extract ICD-10 codes using regex
+                # ICD-10 format: Letter + digits (e.g., J189, I500, E119)
                 pred_vector = [0.0] * len(TARGET_CODES)
-                for code in TARGET_CODES:
-                    if code in prediction_text:
-                        pred_vector[code_to_idx[code]] = 1.0
+
+                # Try exact match first (cleanest)
+                if prediction_text in TARGET_CODES:
+                    pred_vector[code_to_idx[prediction_text]] = 1.0
+                else:
+                    # Fallback: Find ICD-10 codes in response using regex
+                    # Pattern: Capital letter followed by 2-4 digits
+                    found_codes = re.findall(r'\b([A-Z]\d{2,4})\b', prediction_text)
+                    for code in found_codes:
+                        if code in TARGET_CODES:
+                            pred_vector[code_to_idx[code]] = 1.0
 
                 gpt_predictions.append(pred_vector)
             except Exception as e:
@@ -661,6 +685,11 @@ Respond with ONLY the ICD-10 code(s), one per line."""
                     print(f"\n   ⚠️  Error on sample {i}: {str(e)}")
                     print(f"   (Suppressing further errors...)")
                 gpt_predictions.append([0.0] * len(TARGET_CODES))
+
+        # Print debug info
+        print("\n🔍 DEBUG: Sample GPT responses (first 5):")
+        for item in debug_responses:
+            print(f"   Sample {item['sample']}: GPT='{item['response']}' | True={item['true_label']}")
 
         # Calculate metrics
         gpt_preds = np.array(gpt_predictions)
