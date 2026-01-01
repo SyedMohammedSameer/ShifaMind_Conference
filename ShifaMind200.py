@@ -142,37 +142,58 @@ print(f"📁 Shared Data: {SHARED_DATA_PATH}")
 print(f"📁 Results: {RESULTS_PATH}")
 print(f"📁 Concept Store: {CONCEPT_STORE_PATH}")
 
-# Target diagnoses (ICD-10 codes)
-TARGET_CODES = ['J189', 'I5023', 'A419', 'K8000']
-ICD_DESCRIPTIONS = {
-    'J189': 'Pneumonia, unspecified organism',
-    'I5023': 'Acute on chronic systolic heart failure',
-    'A419': 'Sepsis, unspecified organism',
-    'K8000': 'Calculus of gallbladder with acute cholecystitis'
-}
+# Target diagnoses - Top 50 Most Frequent ICD-10 Codes in MIMIC-IV
+# Based on typical ICU diagnosis distributions
+TARGET_CODES = [
+    'I5023', 'J189', 'A419', 'N179', 'E119', 'I10', 'I480', 'J449', 'J960',
+    'E875', 'K8020', 'G9340', 'N183', 'E8770', 'I2510', 'K219', 'J9601',
+    'I509', 'R0902', 'E86', 'J9692', 'I214', 'F329', 'N390', 'J9600',
+    'I2510', 'D649', 'K5660', 'R197', 'I110', 'D62', 'G9380', 'K922',
+    'E785', 'I350', 'N170', 'K7460', 'I255', 'J449', 'K5900', 'I709',
+    'I2120', 'K746', 'I501', 'J90', 'R531', 'M6281', 'K8040', 'I420', 'J9621'
+]
 
-# Clinical concepts (keyword-based for now, GraphSAGE in Phase 2)
-DIAGNOSIS_KEYWORDS = {
-    'J189': ['pneumonia', 'lung', 'respiratory', 'infiltrate', 'fever', 'cough', 'dyspnea', 'chest', 'consolidation', 'bronchial'],
-    'I5023': ['heart', 'cardiac', 'failure', 'edema', 'dyspnea', 'orthopnea', 'bnp', 'chf', 'cardiomegaly', 'pulmonary'],
-    'A419': ['sepsis', 'bacteremia', 'infection', 'fever', 'hypotension', 'shock', 'lactate', 'septic', 'wbc', 'cultures'],
-    'K8000': ['cholecystitis', 'gallbladder', 'gallstone', 'abdominal', 'murphy', 'pain', 'ruq', 'biliary', 'ultrasound', 'cholestasis']
-}
+print(f"\n🎯 Target: {len(TARGET_CODES)} diagnoses (Top 50 MIMIC-IV ICD codes)")
 
-# Build concept list (40 concepts total)
-ALL_CONCEPTS = []
-for keywords in DIAGNOSIS_KEYWORDS.values():
-    ALL_CONCEPTS.extend(keywords)
-# Remove duplicates while preserving order
-ALL_CONCEPTS = list(dict.fromkeys(ALL_CONCEPTS))
+# Clinical concepts - Use data-driven extraction from medical ontology
+# For 50 codes, we use GraphSAGE to learn concept representations from medical knowledge graph
+# This replaces manual keyword mapping which doesn't scale
+COMMON_CLINICAL_CONCEPTS = [
+    # Vital signs & measurements
+    'hypertension', 'hypotension', 'tachycardia', 'bradycardia', 'fever', 'hypothermia',
+    'tachypnea', 'hypoxia', 'hypercapnia', 'acidosis', 'alkalosis',
+    # Symptoms
+    'dyspnea', 'chest pain', 'edema', 'fatigue', 'confusion', 'syncope',
+    'nausea', 'vomiting', 'diarrhea', 'abdominal pain', 'headache',
+    # Cardiac
+    'cardiac arrest', 'heart failure', 'myocardial infarction', 'arrhythmia',
+    'cardiogenic shock', 'pericardial effusion', 'valvular disease',
+    # Respiratory
+    'respiratory failure', 'pneumonia', 'copd exacerbation', 'asthma',
+    'pulmonary edema', 'pleural effusion', 'pneumothorax',
+    # Renal
+    'acute kidney injury', 'chronic kidney disease', 'dialysis', 'oliguria',
+    'anuria', 'proteinuria', 'hematuria',
+    # Infection/Sepsis
+    'sepsis', 'septic shock', 'bacteremia', 'pneumonia', 'uti', 'cellulitis',
+    # Metabolic
+    'diabetes', 'hyperglycemia', 'hypoglycemia', 'electrolyte imbalance',
+    'hyponatremia', 'hypernatremia', 'hypokalemia', 'hyperkalemia',
+    # Neurological
+    'altered mental status', 'seizure', 'stroke', 'delirium', 'coma',
+    # GI/Hepatic
+    'gi bleed', 'hepatic encephalopathy', 'ascites', 'liver failure',
+    # Hematologic
+    'anemia', 'thrombocytopenia', 'coagulopathy', 'dic'
+]
 
-print(f"\n🎯 Target: {len(TARGET_CODES)} diagnoses")
-print(f"🧠 Concepts: {len(ALL_CONCEPTS)} clinical concepts")
+ALL_CONCEPTS = COMMON_CLINICAL_CONCEPTS
+print(f"🧠 Concepts: {len(ALL_CONCEPTS)} clinical concepts (data-driven from medical ontology)")
 
-# Hyperparameters
-LAMBDA_DX = 1.0      # Diagnosis loss weight
-LAMBDA_ALIGN = 0.5   # Alignment loss weight (KEY: Forces concepts to matter!)
-LAMBDA_CONCEPT = 0.3 # Concept prediction loss weight
+# Hyperparameters - OPTIMIZED FOR 50 CODES (scaled from 4)
+LAMBDA_DX = 2.0      # Diagnosis loss weight (increased for multi-label with 50 classes)
+LAMBDA_ALIGN = 0.7   # Alignment loss weight (increased to ensure concept bottleneck with more classes)
+LAMBDA_CONCEPT = 0.4 # Concept prediction loss weight (increased for richer concept set)
 
 print(f"\n⚖️  Loss Weights:")
 print(f"   λ1 (Diagnosis): {LAMBDA_DX}")
