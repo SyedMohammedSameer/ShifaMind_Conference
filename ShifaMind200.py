@@ -19,6 +19,93 @@ Original file is located at
 
 !pip install torch_geometric
 
+"""## Extract Top 50 ICD Codes (Run First Time Only)"""
+
+# ============================================================================
+# OPTIONAL: Extract Top 50 Most Frequent ICD Codes from MIMIC-IV
+# Run this section ONCE to verify/update the top 50 ICD codes
+# Then comment it out for subsequent runs
+# ============================================================================
+
+def extract_top50_codes(run_extraction=False):
+    """
+    Extract top 50 most frequent ICD codes from MIMIC-IV
+    Set run_extraction=True to run this analysis
+    """
+    if not run_extraction:
+        print("⏭️  Skipping ICD code extraction (using hardcoded top 50)")
+        print("   Set run_extraction=True in the function call below to re-extract")
+        return None
+
+    import pandas as pd
+    import numpy as np
+    from pathlib import Path
+    from collections import Counter
+
+    # Path to MIMIC-IV diagnosis data
+    MIMIC_DATA_PATH = Path('/content/drive/MyDrive/ShifaMind/mimic_dx_data.csv')
+
+    print("="*80)
+    print("🔍 EXTRACTING TOP 50 MOST FREQUENT ICD CODES FROM MIMIC-IV")
+    print("="*80)
+
+    # Load MIMIC-IV data
+    print(f"\n📥 Loading data from: {MIMIC_DATA_PATH}")
+
+    if not MIMIC_DATA_PATH.exists():
+        print(f"❌ File not found: {MIMIC_DATA_PATH}")
+        print("   Please ensure mimic_dx_data.csv exists in the base path")
+        return None
+
+    df = pd.read_csv(MIMIC_DATA_PATH)
+
+    print(f"✅ Loaded {len(df)} clinical notes")
+    print(f"📋 Columns: {list(df.columns)[:10]}...")  # Show first 10 columns
+
+    # Extract all ICD code columns (excluding metadata columns)
+    icd_columns = [col for col in df.columns if col not in ['text', 'subject_id', 'hadm_id', 'note_id']]
+
+    print(f"\n🔢 Found {len(icd_columns)} potential ICD code columns")
+
+    # Count frequency of each diagnosis across all patients
+    icd_counter = Counter()
+
+    for col in icd_columns:
+        if col in df.columns:
+            # Count positive cases (assuming binary labels)
+            positive_count = df[col].sum() if df[col].dtype in [int, float] else (df[col] == 1).sum()
+            if positive_count > 0:
+                icd_counter[col] = positive_count
+
+    # Get top 50 most frequent codes
+    top_50_codes = [code for code, count in icd_counter.most_common(50)]
+    top_50_counts = [count for code, count in icd_counter.most_common(50)]
+
+    print("\n" + "="*80)
+    print("📊 TOP 50 MOST FREQUENT ICD CODES")
+    print("="*80)
+
+    for i, (code, count) in enumerate(zip(top_50_codes, top_50_counts), 1):
+        percentage = (count / len(df)) * 100
+        print(f"{i:2d}. {code:8s}  Count: {count:5d}  ({percentage:5.2f}% of patients)")
+
+    # Generate Python code for TARGET_CODES
+    print("\n" + "="*80)
+    print("📝 PYTHON CODE FOR TARGET_CODES")
+    print("="*80)
+
+    print("\n# Top 50 Most Frequent ICD Codes from MIMIC-IV")
+    print(f"TARGET_CODES = {top_50_codes}")
+
+    print("\n✅ Extraction complete!")
+    print("💡 Update TARGET_CODES in Phase 1 if codes have changed")
+    print("="*80)
+
+    return top_50_codes
+
+# Run extraction (set to True to re-extract codes)
+extract_top50_codes(run_extraction=False)
+
 """## p1"""
 
 #!/usr/bin/env python3
@@ -114,7 +201,7 @@ print("="*80)
 
 # Google Drive path (Colab environment)
 BASE_PATH = Path('/content/drive/MyDrive/ShifaMind')
-OUTPUT_BASE = BASE_PATH / '08_ShifaMind'
+OUTPUT_BASE = BASE_PATH / '09_ShifaMind'
 
 # Use existing shared_data if available
 EXISTING_SHARED_DATA = BASE_PATH / '03_Models/shared_data'
@@ -951,7 +1038,7 @@ print("="*80)
 
 # Local environment path
 BASE_PATH = Path('/content/drive/MyDrive/ShifaMind')
-OUTPUT_BASE = BASE_PATH / '08_ShifaMind'
+OUTPUT_BASE = BASE_PATH / '09_ShifaMind'
 
 # Use existing shared_data if available (same as Phase 1)
 EXISTING_SHARED_DATA = BASE_PATH / '03_Models/shared_data'
@@ -1780,7 +1867,7 @@ print("="*80)
 
 # Paths
 BASE_PATH = Path('/content/drive/MyDrive/ShifaMind')
-OUTPUT_BASE = BASE_PATH / '08_ShifaMind'
+OUTPUT_BASE = BASE_PATH / '09_ShifaMind'
 
 # Use existing shared_data if available
 EXISTING_SHARED_DATA = BASE_PATH / '03_Models/shared_data'
@@ -2620,7 +2707,7 @@ print("="*80)
 
 # Paths
 BASE_PATH = Path('/content/drive/MyDrive/ShifaMind')
-OUTPUT_BASE = BASE_PATH / '08_ShifaMind'
+OUTPUT_BASE = BASE_PATH / '09_ShifaMind'
 
 # Use existing shared_data if available
 EXISTING_SHARED_DATA = BASE_PATH / '03_Models/shared_data'
@@ -3588,7 +3675,7 @@ print("="*80)
 
 # Paths
 BASE_PATH = Path('/content/drive/MyDrive/ShifaMind')
-OUTPUT_BASE = BASE_PATH / '08_ShifaMind'
+OUTPUT_BASE = BASE_PATH / '09_ShifaMind'
 
 EXISTING_SHARED_DATA = BASE_PATH / '03_Models/shared_data'
 if EXISTING_SHARED_DATA.exists():
