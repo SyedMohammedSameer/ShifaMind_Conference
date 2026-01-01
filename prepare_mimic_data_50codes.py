@@ -180,18 +180,38 @@ df_merged = df_notes.merge(df_labels, on='hadm_id', how='inner')
 print(f"✅ Merged: {len(df_merged):,} notes with labels")
 
 # ============================================================================
-# STEP 6: QUALITY CHECKS & STATISTICS
+# STEP 6: REMOVE CODES WITH LOW FREQUENCY & QUALITY CHECKS
 # ============================================================================
 
 print("\n" + "="*80)
-print("🔍 STEP 6: QUALITY CHECKS")
+print("🔍 STEP 6: REMOVING LOW-FREQUENCY CODES")
 print("="*80)
 
 # Check label distribution
 label_sums = df_merged[top_50_codes].sum()
 
+# Remove codes with less than 100 samples (too rare to learn)
+MIN_SAMPLES = 100
+codes_to_keep = label_sums[label_sums >= MIN_SAMPLES].index.tolist()
+codes_removed = [code for code in top_50_codes if code not in codes_to_keep]
+
+if codes_removed:
+    print(f"\n⚠️  Removing {len(codes_removed)} codes with < {MIN_SAMPLES} samples:")
+    for code in codes_removed:
+        count = label_sums[code]
+        print(f"   • {code}: {count:.0f} samples (too rare)")
+
+    top_50_codes = codes_to_keep
+    print(f"\n✅ Kept {len(top_50_codes)} codes with sufficient samples")
+else:
+    print(f"✅ All 50 codes have >= {MIN_SAMPLES} samples")
+
+# Update label sums after filtering
+label_sums = df_merged[top_50_codes].sum()
+
 print(f"\n📊 Label Statistics:")
 print(f"   Total samples: {len(df_merged):,}")
+print(f"   Total codes: {len(top_50_codes)}")
 print(f"   Avg labels per sample: {df_merged[top_50_codes].sum(axis=1).mean():.2f}")
 print(f"   Min labels per sample: {df_merged[top_50_codes].sum(axis=1).min():.0f}")
 print(f"   Max labels per sample: {df_merged[top_50_codes].sum(axis=1).max():.0f}")

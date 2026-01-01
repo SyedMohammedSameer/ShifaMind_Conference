@@ -253,23 +253,30 @@ print("="*80)
 
 def label_concepts(texts: List[str], concepts: List[str]) -> np.ndarray:
     """
-    Simple keyword-based concept labeling
+    Fast keyword-based concept labeling
     Returns binary matrix: (n_samples, n_concepts)
     """
-    concept_labels = []
+    print(f"   Processing {len(texts):,} texts for {len(concepts)} concepts...")
 
-    for text in tqdm(texts, desc="Labeling concepts"):
-        text_lower = text.lower()
-        labels = []
+    # Pre-lowercase concepts once
+    concepts_lower = [c.lower() for c in concepts]
 
-        for concept in concepts:
-            # Simple presence check (can be improved with NER/medical NLP)
-            present = 1.0 if concept.lower() in text_lower else 0.0
-            labels.append(present)
+    # Vectorized approach - much faster
+    concept_labels = np.zeros((len(texts), len(concepts)), dtype=np.float32)
 
-        concept_labels.append(labels)
+    # Process in chunks for progress bar
+    chunk_size = 10000
+    for i in tqdm(range(0, len(texts), chunk_size), desc="Labeling concepts"):
+        chunk_end = min(i + chunk_size, len(texts))
+        chunk_texts = texts[i:chunk_end]
 
-    return np.array(concept_labels, dtype=np.float32)
+        for j, concept in enumerate(concepts_lower):
+            # Vectorized string search
+            for k, text in enumerate(chunk_texts):
+                if concept in text.lower():
+                    concept_labels[i + k, j] = 1.0
+
+    return concept_labels
 
 train_concept_labels = label_concepts(train_texts, COMMON_CLINICAL_CONCEPTS)
 val_concept_labels = label_concepts(val_texts, COMMON_CLINICAL_CONCEPTS)
