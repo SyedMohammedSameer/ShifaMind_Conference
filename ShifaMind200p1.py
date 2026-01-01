@@ -95,15 +95,40 @@ print(f"📁 Checkpoints: {CHECKPOINT_PATH}")
 print(f"📁 Shared Data: {SHARED_DATA_PATH}")
 print(f"📁 Results: {RESULTS_PATH}")
 
-# Top 50 Most Frequent ICD-10 Codes in MIMIC-IV
-TARGET_CODES = [
-    'I5023', 'J189', 'A419', 'N179', 'E119', 'I10', 'I480', 'J449', 'J960',
-    'E875', 'K8020', 'G9340', 'N183', 'E8770', 'I2510', 'K219', 'J9601',
-    'I509', 'R0902', 'E86', 'J9692', 'I214', 'F329', 'N390', 'J9600',
-    'I2510', 'D649', 'K5660', 'R197', 'I110', 'D62', 'G9380', 'K922',
-    'E785', 'I350', 'N170', 'K7460', 'I255', 'J449', 'K5900', 'I709',
-    'I2120', 'K746', 'I501', 'J90', 'R531', 'M6281', 'K8040', 'I420', 'J9621'
-]
+# ============================================================================
+# LOAD DATA FIRST TO AUTO-DETECT ICD CODES
+# ============================================================================
+
+print("\n" + "="*80)
+print("📊 LOADING MIMIC-IV DATA")
+print("="*80)
+
+MIMIC_DATA_PATH = BASE_PATH / 'mimic_dx_data.csv'
+
+print(f"\n📥 Loading data from: {MIMIC_DATA_PATH}")
+
+if not MIMIC_DATA_PATH.exists():
+    raise FileNotFoundError(
+        f"❌ MIMIC data not found at: {MIMIC_DATA_PATH}\n\n"
+        f"Please run prepare_mimic_data_50codes.py first to create this file.\n\n"
+        f"Steps:\n"
+        f"  1. Run: python prepare_mimic_data_50codes.py\n"
+        f"  2. Then run this script"
+    )
+
+# Load CSV
+df = pd.read_csv(MIMIC_DATA_PATH)
+
+print(f"✅ Loaded {len(df):,} total clinical notes")
+print(f"📋 Columns found: {len(df.columns)}")
+
+# Auto-detect ICD code columns (all columns except metadata)
+metadata_cols = ['text', 'subject_id', 'hadm_id', 'note_id', 'charttime', 'storetime']
+TARGET_CODES = [col for col in df.columns if col not in metadata_cols]
+
+print(f"\n🎯 Detected {len(TARGET_CODES)} ICD-10 diagnosis codes")
+print(f"   First 10: {TARGET_CODES[:10]}")
+print(f"   Last 10:  {TARGET_CODES[-10:]}")
 
 # 75 Clinical Concepts
 COMMON_CLINICAL_CONCEPTS = [
@@ -140,7 +165,6 @@ COMMON_CLINICAL_CONCEPTS = [
 NUM_DIAGNOSES = len(TARGET_CODES)
 NUM_CONCEPTS = len(COMMON_CLINICAL_CONCEPTS)
 
-print(f"\n🎯 Target: {NUM_DIAGNOSES} diagnoses")
 print(f"🧠 Concepts: {NUM_CONCEPTS} clinical concepts")
 
 # Hyperparameters
@@ -159,37 +183,16 @@ print(f"   λ_align (Alignment): {LAMBDA_ALIGN}")
 print(f"   λ_concept (Concept): {LAMBDA_CONCEPT}")
 
 # ============================================================================
-# DATA LOADING
+# FILTER DATA
 # ============================================================================
 
 print("\n" + "="*80)
-print("📊 LOADING MIMIC-IV DATA FOR 50 ICD CODES")
+print("🔍 FILTERING DATA")
 print("="*80)
 
-MIMIC_DATA_PATH = BASE_PATH / 'mimic_dx_data.csv'
-
-print(f"\n📥 Loading data from: {MIMIC_DATA_PATH}")
-
-if not MIMIC_DATA_PATH.exists():
-    raise FileNotFoundError(
-        f"❌ MIMIC data not found at: {MIMIC_DATA_PATH}\n"
-        f"Please ensure mimic_dx_data.csv exists with columns:\n"
-        f"  - text (clinical notes)\n"
-        f"  - {', '.join(TARGET_CODES[:5])}... (ICD code columns)"
-    )
-
-df = pd.read_csv(MIMIC_DATA_PATH)
-
-print(f"✅ Loaded {len(df)} total clinical notes")
-print(f"📋 Columns found: {len(df.columns)}")
-
-# Verify all target codes exist
-missing_codes = [code for code in TARGET_CODES if code not in df.columns]
-if missing_codes:
-    raise ValueError(
-        f"❌ Missing ICD codes in data: {missing_codes[:10]}\n"
-        f"Available columns: {list(df.columns)[:20]}"
-    )
+# Verify text column exists
+if 'text' not in df.columns:
+    raise ValueError("❌ 'text' column not found in data")
 
 # Filter to samples that have at least one of the target codes
 mask = df[TARGET_CODES].sum(axis=1) > 0
