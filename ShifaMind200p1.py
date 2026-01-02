@@ -167,10 +167,12 @@ NUM_CONCEPTS = len(COMMON_CLINICAL_CONCEPTS)
 
 print(f"🧠 Concepts: {NUM_CONCEPTS} clinical concepts")
 
-# Hyperparameters
-LAMBDA_DX = 2.0      # Diagnosis loss weight (increased for 50 codes)
-LAMBDA_ALIGN = 0.0   # Alignment loss DISABLED - was forcing all concepts to ~1.0, destroying discrimination
-LAMBDA_CONCEPT = 0.5 # Concept loss weight (increased since alignment is off)
+# Hyperparameters (Phase 1 Fix - CBM Best Practices)
+LAMBDA_DX = 1.0        # Diagnosis loss weight
+LAMBDA_CONCEPT = 0.6   # Concept loss weight (noisy keyword labels)
+LAMBDA_PRIOR = 0.2     # Sparsity prior (replaces broken alignment loss)
+LAMBDA_W_SPARSE = 1e-3 # L1 regularization on diagnosis weights
+TARGET_SPARSITY = 0.15 # Target mean concept activation (15% of concepts)
 
 BATCH_SIZE = 8
 EPOCHS = 5
@@ -179,8 +181,10 @@ MAX_LENGTH = 512
 
 print(f"\n⚖️  Loss Weights:")
 print(f"   λ_dx (Diagnosis): {LAMBDA_DX}")
-print(f"   λ_align (Alignment): {LAMBDA_ALIGN}")
 print(f"   λ_concept (Concept): {LAMBDA_CONCEPT}")
+print(f"   λ_prior (Sparsity): {LAMBDA_PRIOR}")
+print(f"   λ_w_sparse (Weight L1): {LAMBDA_W_SPARSE}")
+print(f"   Target sparsity: {TARGET_SPARSITY:.0%}")
 
 # ============================================================================
 # FILTER DATA
@@ -242,6 +246,30 @@ val_texts, test_texts, val_labels, test_labels = train_test_split(
 print(f"✅ Train: {len(train_texts)} samples")
 print(f"✅ Val:   {len(val_texts)} samples")
 print(f"✅ Test:  {len(test_texts)} samples")
+
+# ============================================================================
+# COMPUTE POS_WEIGHT FOR IMBALANCED DIAGNOSIS LABELS
+# ============================================================================
+
+print("\n" + "="*80)
+print("⚖️  COMPUTING CLASS WEIGHTS FOR IMBALANCED LABELS")
+print("="*80)
+
+# Calculate positive samples per diagnosis
+pos_counts = train_labels.sum(axis=0)  # (num_diagnoses,)
+neg_counts = len(train_labels) - pos_counts
+pos_weight = neg_counts / (pos_counts + 1e-5)  # Avoid division by zero
+
+print(f"   Diagnosis label statistics:")
+print(f"   • Min positive samples: {pos_counts.min():.0f}")
+print(f"   • Max positive samples: {pos_counts.max():.0f}")
+print(f"   • Mean positive samples: {pos_counts.mean():.0f}")
+print(f"   • Min pos_weight: {pos_weight.min():.2f}")
+print(f"   • Max pos_weight: {pos_weight.max():.2f}")
+print(f"   • Mean pos_weight: {pos_weight.mean():.2f}")
+
+# Convert to tensor for use in loss
+pos_weight_tensor = torch.FloatTensor(pos_weight)
 
 # ============================================================================
 # CONCEPT LABELING
@@ -438,8 +466,9 @@ class ConceptBottleneckModel(nn.Module):
         concept_logits = self.concept_head(attended_concepts).squeeze(-1)  # (batch, num_concepts)
 
         # 4. BOTTLENECK: Use concept predictions for diagnosis
-        # Apply sigmoid to get concept activations, then pass to diagnosis head
-        concept_activations = torch.sigmoid(concept_logits)  # (batch, num_concepts)
+        # Apply sigmoid with temperature scaling to prevent saturation
+        tau = 2.0  # Temperature - prevents concepts from saturating to 0/1
+        concept_activations = torch.sigmoid(concept_logits / tau)  # (batch, num_concepts)
 
         # 5. Predict diagnoses from concepts
         diagnosis_logits = self.diagnosis_head(concept_activations)  # (batch, num_diagnoses)
@@ -466,52 +495,77 @@ print(f"✅ Model loaded: {total_params:,} parameters")
 
 class MultiObjectiveLoss(nn.Module):
     """
-    L_total = λ_dx·L_dx + λ_align·L_align + λ_concept·L_concept
+    CBM Loss with pos_weight, sparsity prior, and label smoothing
+
+    L_total = λ_dx·L_dx + λ_concept·L_concept + λ_prior·L_prior + λ_w·L_w_sparse
+
+    Improvements:
+    - pos_weight handles class imbalance (critical for 50 codes)
+    - Sparsity prior prevents "all concepts high" failure mode
+    - Label smoothing handles noisy keyword-based concept labels
+    - L1 regularization encourages interpretable sparse diagnosis weights
     """
-    def __init__(self, lambda_dx=2.0, lambda_align=0.7, lambda_concept=0.4):
+    def __init__(self, pos_weight, lambda_dx=1.0, lambda_concept=0.6,
+                 lambda_prior=0.2, lambda_w_sparse=1e-3, target_sparsity=0.15,
+                 label_smoothing=0.05):
         super().__init__()
         self.lambda_dx = lambda_dx
-        self.lambda_align = lambda_align
         self.lambda_concept = lambda_concept
-        self.bce = nn.BCEWithLogitsLoss()
+        self.lambda_prior = lambda_prior
+        self.lambda_w_sparse = lambda_w_sparse
+        self.target_sparsity = target_sparsity
+        self.label_smoothing = label_smoothing
 
-    def forward(self, outputs, dx_labels, concept_labels):
-        # 1. Diagnosis loss
-        loss_dx = self.bce(outputs['logits'], dx_labels)
+        # Diagnosis BCE with pos_weight for class imbalance
+        self.bce_dx = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        # Concept BCE without pos_weight (concepts are more balanced)
+        self.bce_concept = nn.BCEWithLogitsLoss()
 
-        # 2. Concept prediction loss
-        loss_concept = self.bce(outputs['concept_logits'], concept_labels)
+    def forward(self, outputs, dx_labels, concept_labels, model):
+        # 1. Diagnosis loss (with pos_weight for imbalance)
+        loss_dx = self.bce_dx(outputs['logits'], dx_labels)
 
-        # 3. Alignment loss (concepts should correlate with diagnoses)
-        # When diagnosis is present, relevant concepts should activate
+        # 2. Concept prediction loss (with label smoothing for noisy labels)
+        # Smooth: 0→0.05, 1→0.95
+        concept_targets = concept_labels * (1 - 2*self.label_smoothing) + self.label_smoothing
+        loss_concept = self.bce_concept(outputs['concept_logits'], concept_targets)
+
+        # 3. Sparsity prior (REPLACES broken alignment loss)
+        # Encourage mean activation ≈ target_sparsity (e.g., 15%)
+        # This prevents "all concepts → 1.0" failure mode
         concept_activations = outputs['concept_activations']
+        mean_activation = concept_activations.mean()
+        loss_prior = (mean_activation - self.target_sparsity) ** 2
 
-        # Simple alignment: encourage high concept activation when diagnosis present
-        # For each diagnosis, we want some concepts to be active
-        concept_contrib = concept_activations.mean(dim=1)  # (batch,)
-        dx_present = (dx_labels.sum(dim=1) > 0).float()    # (batch,)
-
-        # When diagnosis present, concepts should be active
-        loss_align = F.mse_loss(concept_contrib, dx_present)
+        # 4. L1 regularization on diagnosis weights
+        # Encourages each diagnosis to depend on few concepts (interpretability)
+        # Access first layer of diagnosis_head MLP
+        dx_head_weights = model.diagnosis_head[0].weight  # (hidden//2, num_concepts)
+        loss_w_sparse = dx_head_weights.abs().mean()
 
         # Total loss
         total_loss = (
             self.lambda_dx * loss_dx +
             self.lambda_concept * loss_concept +
-            self.lambda_align * loss_align
+            self.lambda_prior * loss_prior +
+            self.lambda_w_sparse * loss_w_sparse
         )
 
         return total_loss, {
             'loss_dx': loss_dx.item(),
             'loss_concept': loss_concept.item(),
-            'loss_align': loss_align.item(),
+            'loss_prior': loss_prior.item(),
+            'loss_w_sparse': loss_w_sparse.item(),
             'total': total_loss.item()
         }
 
 criterion = MultiObjectiveLoss(
+    pos_weight=pos_weight_tensor.to(device),
     lambda_dx=LAMBDA_DX,
-    lambda_align=LAMBDA_ALIGN,
-    lambda_concept=LAMBDA_CONCEPT
+    lambda_concept=LAMBDA_CONCEPT,
+    lambda_prior=LAMBDA_PRIOR,
+    lambda_w_sparse=LAMBDA_W_SPARSE,
+    target_sparsity=TARGET_SPARSITY
 )
 
 # ============================================================================
@@ -550,7 +604,7 @@ for epoch in range(EPOCHS):
 
         optimizer.zero_grad()
         outputs = model(input_ids, attention_mask)
-        loss, components = criterion(outputs, dx_labels, concept_labels)
+        loss, components = criterion(outputs, dx_labels, concept_labels, model)
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -565,7 +619,8 @@ for epoch in range(EPOCHS):
     print(f"\n📉 Train Loss: {avg_train_loss:.4f}")
     print(f"   • Diagnosis:  {train_components['loss_dx']/len(train_loader):.4f}")
     print(f"   • Concept:    {train_components['loss_concept']/len(train_loader):.4f}")
-    print(f"   • Alignment:  {train_components['loss_align']/len(train_loader):.4f}")
+    print(f"   • Sparsity:   {train_components['loss_prior']/len(train_loader):.4f}")
+    print(f"   • Weight L1:  {train_components['loss_w_sparse']/len(train_loader):.4f}")
 
     # VALIDATION
     model.eval()
@@ -582,12 +637,12 @@ for epoch in range(EPOCHS):
             concept_labels = batch['concept_labels'].to(device)
 
             outputs = model(input_ids, attention_mask)
-            loss, _ = criterion(outputs, dx_labels, concept_labels)
+            loss, _ = criterion(outputs, dx_labels, concept_labels, model)
             val_loss += loss.item()
 
             # Get probabilities and predictions
             dx_probs = torch.sigmoid(outputs['logits']).cpu().numpy()
-            dx_preds = dx_probs > 0.3  # Lower threshold for multi-label (was 0.5)
+            dx_preds = dx_probs > 0.2  # Optimized threshold for multi-label imbalanced data
             concept_preds = torch.sigmoid(outputs['concept_logits']).cpu().numpy() > 0.5
             concept_acts = outputs['concept_activations'].cpu().numpy()
 
@@ -672,7 +727,7 @@ with torch.no_grad():
 
         outputs = model(input_ids, attention_mask)
 
-        dx_preds = torch.sigmoid(outputs['logits']).cpu().numpy() > 0.3  # Lower threshold for multi-label
+        dx_preds = torch.sigmoid(outputs['logits']).cpu().numpy() > 0.2  # Optimized threshold for multi-label imbalanced data
         concept_preds = torch.sigmoid(outputs['concept_logits']).cpu().numpy() > 0.5
 
         all_dx_preds.append(dx_preds)
@@ -724,11 +779,15 @@ results = {
         'num_diagnoses': NUM_DIAGNOSES,
         'num_concepts': NUM_CONCEPTS,
         'lambda_dx': LAMBDA_DX,
-        'lambda_align': LAMBDA_ALIGN,
         'lambda_concept': LAMBDA_CONCEPT,
+        'lambda_prior': LAMBDA_PRIOR,
+        'lambda_w_sparse': LAMBDA_W_SPARSE,
+        'target_sparsity': TARGET_SPARSITY,
         'batch_size': BATCH_SIZE,
         'epochs': EPOCHS,
-        'lr': LR
+        'lr': LR,
+        'diagnosis_threshold': 0.2,
+        'temperature': 2.0
     }
 }
 
