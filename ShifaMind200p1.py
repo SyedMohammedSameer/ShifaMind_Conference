@@ -257,10 +257,35 @@ print("="*80)
 
 # Calculate positive samples per diagnosis
 pos_counts = train_labels.sum(axis=0)  # (num_diagnoses,)
-neg_counts = len(train_labels) - pos_counts
-pos_weight = neg_counts / (pos_counts + 1e-5)  # Avoid division by zero
 
-print(f"   Diagnosis label statistics:")
+# CRITICAL FIX: Remove codes with insufficient samples (< 100)
+MIN_SAMPLES = 100
+valid_codes_mask = pos_counts >= MIN_SAMPLES
+invalid_codes = [TARGET_CODES[i] for i in range(len(TARGET_CODES)) if not valid_codes_mask[i]]
+
+if len(invalid_codes) > 0:
+    print(f"\n⚠️  Removing {len(invalid_codes)} codes with < {MIN_SAMPLES} samples:")
+    for code in invalid_codes:
+        idx = TARGET_CODES.index(code)
+        print(f"   • {code}: {pos_counts[idx]:.0f} samples (too rare)")
+
+    # Filter data
+    TARGET_CODES = [TARGET_CODES[i] for i in range(len(TARGET_CODES)) if valid_codes_mask[i]]
+    train_labels = train_labels[:, valid_codes_mask]
+    val_labels = val_labels[:, valid_codes_mask]
+    test_labels = test_labels[:, valid_codes_mask]
+    pos_counts = pos_counts[valid_codes_mask]
+
+    print(f"\n✅ Kept {len(TARGET_CODES)} valid diagnosis codes")
+
+NUM_DIAGNOSES = len(TARGET_CODES)
+
+# Now compute pos_weight safely (all counts >= MIN_SAMPLES)
+neg_counts = len(train_labels) - pos_counts
+pos_weight = neg_counts / pos_counts  # Safe division - no zeros
+
+print(f"\n   Diagnosis label statistics:")
+print(f"   • Number of diagnoses: {NUM_DIAGNOSES}")
 print(f"   • Min positive samples: {pos_counts.min():.0f}")
 print(f"   • Max positive samples: {pos_counts.max():.0f}")
 print(f"   • Mean positive samples: {pos_counts.mean():.0f}")
