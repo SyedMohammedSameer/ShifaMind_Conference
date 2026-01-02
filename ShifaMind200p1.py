@@ -169,8 +169,8 @@ print(f"🧠 Concepts: {NUM_CONCEPTS} clinical concepts")
 
 # Hyperparameters
 LAMBDA_DX = 2.0      # Diagnosis loss weight (increased for 50 codes)
-LAMBDA_ALIGN = 0.7   # Alignment loss weight (forces concept bottleneck)
-LAMBDA_CONCEPT = 0.4 # Concept loss weight
+LAMBDA_ALIGN = 0.0   # Alignment loss DISABLED - was forcing all concepts to ~1.0, destroying discrimination
+LAMBDA_CONCEPT = 0.5 # Concept loss weight (increased since alignment is off)
 
 BATCH_SIZE = 8
 EPOCHS = 5
@@ -572,6 +572,7 @@ for epoch in range(EPOCHS):
     val_loss = 0.0
     all_dx_preds, all_dx_labels = [], []
     all_concept_preds, all_concept_labels = [], []
+    all_dx_probs, all_concept_activations = [], []  # Store raw values for diagnostics
 
     with torch.no_grad():
         for batch in tqdm(val_loader, desc="Validation"):
@@ -584,20 +585,32 @@ for epoch in range(EPOCHS):
             loss, _ = criterion(outputs, dx_labels, concept_labels)
             val_loss += loss.item()
 
-            # Predictions
-            dx_preds = torch.sigmoid(outputs['logits']).cpu().numpy() > 0.5
+            # Get probabilities and predictions
+            dx_probs = torch.sigmoid(outputs['logits']).cpu().numpy()
+            dx_preds = dx_probs > 0.3  # Lower threshold for multi-label (was 0.5)
             concept_preds = torch.sigmoid(outputs['concept_logits']).cpu().numpy() > 0.5
+            concept_acts = outputs['concept_activations'].cpu().numpy()
 
             all_dx_preds.append(dx_preds)
             all_dx_labels.append(dx_labels.cpu().numpy())
             all_concept_preds.append(concept_preds)
             all_concept_labels.append(concept_labels.cpu().numpy())
+            all_dx_probs.append(dx_probs)
+            all_concept_activations.append(concept_acts)
 
     # Metrics
     all_dx_preds = np.vstack(all_dx_preds)
     all_dx_labels = np.vstack(all_dx_labels)
     all_concept_preds = np.vstack(all_concept_preds)
     all_concept_labels = np.vstack(all_concept_labels)
+    all_dx_probs = np.vstack(all_dx_probs)
+    all_concept_activations = np.vstack(all_concept_activations)
+
+    # DIAGNOSTIC: Check prediction distributions
+    dx_pred_rate = all_dx_preds.mean()
+    dx_label_rate = all_dx_labels.mean()
+    concept_pred_rate = all_concept_preds.mean()
+    concept_label_rate = all_concept_labels.mean()
 
     val_dx_f1 = f1_score(all_dx_labels, all_dx_preds, average='macro', zero_division=0)
     val_concept_f1 = f1_score(all_concept_labels, all_concept_preds, average='macro', zero_division=0)
@@ -608,6 +621,12 @@ for epoch in range(EPOCHS):
     print(f"   Loss:        {avg_val_loss:.4f}")
     print(f"   Diagnosis F1:  {val_dx_f1:.4f}")
     print(f"   Concept F1:    {val_concept_f1:.4f}")
+    print(f"\n🔍 Prediction Statistics:")
+    print(f"   Diagnosis predictions (positive rate): {dx_pred_rate:.4f} (expected: {dx_label_rate:.4f})")
+    print(f"   Concept predictions (positive rate):   {concept_pred_rate:.4f} (expected: {concept_label_rate:.4f})")
+    print(f"\n🔬 Raw Value Distributions:")
+    print(f"   Diagnosis probabilities: mean={all_dx_probs.mean():.4f}, std={all_dx_probs.std():.4f}, min={all_dx_probs.min():.4f}, max={all_dx_probs.max():.4f}")
+    print(f"   Concept activations:     mean={all_concept_activations.mean():.4f}, std={all_concept_activations.std():.4f}, min={all_concept_activations.min():.4f}, max={all_concept_activations.max():.4f}")
 
     # Save best model
     if val_dx_f1 > best_val_f1:
@@ -653,7 +672,7 @@ with torch.no_grad():
 
         outputs = model(input_ids, attention_mask)
 
-        dx_preds = torch.sigmoid(outputs['logits']).cpu().numpy() > 0.5
+        dx_preds = torch.sigmoid(outputs['logits']).cpu().numpy() > 0.3  # Lower threshold for multi-label
         concept_preds = torch.sigmoid(outputs['concept_logits']).cpu().numpy() > 0.5
 
         all_dx_preds.append(dx_preds)
