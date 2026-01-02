@@ -491,9 +491,8 @@ class ConceptBottleneckModel(nn.Module):
         concept_logits = self.concept_head(attended_concepts).squeeze(-1)  # (batch, num_concepts)
 
         # 4. BOTTLENECK: Use concept predictions for diagnosis
-        # Apply sigmoid with temperature scaling to prevent saturation
-        tau = 2.0  # Temperature - prevents concepts from saturating to 0/1
-        concept_activations = torch.sigmoid(concept_logits / tau)  # (batch, num_concepts)
+        # Apply sigmoid to get concept activations in [0, 1]
+        concept_activations = torch.sigmoid(concept_logits)  # (batch, num_concepts)
 
         # 5. Predict diagnoses from concepts
         diagnosis_logits = self.diagnosis_head(concept_activations)  # (batch, num_diagnoses)
@@ -811,8 +810,7 @@ results = {
         'batch_size': BATCH_SIZE,
         'epochs': EPOCHS,
         'lr': LR,
-        'diagnosis_threshold': 0.2,
-        'temperature': 2.0
+        'diagnosis_threshold': 0.2
     }
 }
 
