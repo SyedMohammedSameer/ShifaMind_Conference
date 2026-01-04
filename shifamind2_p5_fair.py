@@ -241,6 +241,18 @@ print("\n" + "="*80)
 print("🏗️  LOADING SHIFAMIND MODELS")
 print("="*80)
 
+def fix_checkpoint_keys(state_dict):
+    """Fix key names from checkpoint to match model architecture"""
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        # Rename base_model.* to bert.*
+        if key.startswith('base_model.'):
+            new_key = key.replace('base_model.', 'bert.')
+            new_state_dict[new_key] = value
+        else:
+            new_state_dict[key] = value
+    return new_state_dict
+
 # Simple RAG for Phase 3
 class SimpleRAG:
     def __init__(self, top_k=3, threshold=0.7):
@@ -374,7 +386,9 @@ if phase1_checkpoint_path.exists():
     model_p1 = ShifaMind2Phase1(base_model, len(ALL_CONCEPTS), len(TOP_50_CODES)).to(device)
 
     checkpoint = torch.load(phase1_checkpoint_path, map_location=device, weights_only=False)
-    model_p1.load_state_dict(checkpoint['model_state_dict'])
+    # Fix key names from checkpoint
+    fixed_state_dict = fix_checkpoint_keys(checkpoint['model_state_dict'])
+    model_p1.load_state_dict(fixed_state_dict)
     concept_embedding_layer.weight.data = checkpoint['concept_embeddings']
     concept_embeddings = concept_embedding_layer.weight.detach()
 
@@ -404,7 +418,9 @@ if phase3_checkpoint_path.exists():
     model_p3 = ShifaMind2Phase3(base_model, rag, len(ALL_CONCEPTS), len(TOP_50_CODES)).to(device)
 
     checkpoint = torch.load(phase3_checkpoint_path, map_location=device, weights_only=False)
-    model_p3.load_state_dict(checkpoint['model_state_dict'])
+    # Fix key names from checkpoint
+    fixed_state_dict = fix_checkpoint_keys(checkpoint['model_state_dict'])
+    model_p3.load_state_dict(fixed_state_dict)
     concept_embedding_layer.weight.data = checkpoint['concept_embeddings']
     concept_embeddings = concept_embedding_layer.weight.detach()
 
