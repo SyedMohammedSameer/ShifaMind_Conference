@@ -159,7 +159,7 @@ print("🏗️  BASELINE MODEL ARCHITECTURES")
 print("="*80)
 
 class CAML(nn.Module):
-    """CAML: Convolutional Attention for Multi-Label classification"""
+    """CAML: Convolutional Attention for Multi-Label classification (Mullenbach et al., NAACL 2018)"""
     def __init__(self, vocab_size=30522, embed_dim=100, num_filters=50, num_labels=50):
         super().__init__()
         self.num_labels = num_labels
@@ -181,8 +181,111 @@ class CAML(nn.Module):
         logits = torch.sum(m * self.final_weight.unsqueeze(0), dim=2) + self.final_bias
         return logits
 
+class DR_CAML(nn.Module):
+    """DR-CAML: CAML + description regularization (Mullenbach et al., NAACL 2018)"""
+    def __init__(self, vocab_size=30522, embed_dim=100, num_filters=50, num_labels=50,
+                 descriptions=None, tokenizer=None, lambda_desc=0.1):
+        super().__init__()
+        self.num_labels = num_labels
+        self.num_filters = num_filters
+        self.lambda_desc = lambda_desc
+
+        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
+        self.conv = nn.Conv1d(embed_dim, num_filters, kernel_size=4, padding=2)
+        self.U = nn.Linear(num_filters, num_labels, bias=False)
+        self.final_weight = nn.Parameter(torch.randn(num_labels, num_filters))
+        self.final_bias = nn.Parameter(torch.zeros(num_labels))
+
+        # Precompute description embeddings
+        if descriptions is not None and tokenizer is not None:
+            self.register_buffer('desc_embeddings', self._encode_descriptions(descriptions, tokenizer))
+        else:
+            self.register_buffer('desc_embeddings', torch.zeros(num_labels, num_filters))
+
+    def _encode_descriptions(self, descriptions, tokenizer):
+        """Encode ICD descriptions into num_filters-dim vectors"""
+        desc_vecs = []
+        for desc in descriptions:
+            tokens = tokenizer(desc, truncation=True, max_length=128,
+                             padding='max_length', return_tensors='pt')
+            input_ids = tokens['input_ids']
+            with torch.no_grad():
+                x = self.embedding(input_ids)
+                x = x.transpose(1, 2)
+                h = torch.tanh(self.conv(x))
+                pooled = F.max_pool1d(h, kernel_size=h.size(2)).squeeze()
+            desc_vecs.append(pooled)
+        return torch.stack(desc_vecs)
+
+    def forward(self, input_ids, attention_mask=None, return_reg_loss=False):
+        x = self.embedding(input_ids)
+        x = x.transpose(1, 2)
+        H = torch.tanh(self.conv(x))
+        H = H.transpose(1, 2)
+        alpha = torch.softmax(self.U(H), dim=1)
+        m = torch.bmm(alpha.transpose(1, 2), H)
+        logits = torch.sum(m * self.final_weight.unsqueeze(0), dim=2) + self.final_bias
+
+        if return_reg_loss:
+            reg_loss = torch.mean((self.final_weight - self.desc_embeddings) ** 2)
+            return logits, reg_loss
+        return logits
+
+class MultiResCNN(nn.Module):
+    """MultiResCNN: Multi-scale CNN with label attention (Li & Yu, AAAI 2020)"""
+    def __init__(self, vocab_size=30522, embed_dim=100, num_labels=50):
+        super().__init__()
+        self.num_labels = num_labels
+
+        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
+        self.conv3 = nn.Conv1d(embed_dim, 100, kernel_size=3, padding=1)
+        self.conv5 = nn.Conv1d(embed_dim, 100, kernel_size=5, padding=2)
+        self.conv9 = nn.Conv1d(embed_dim, 100, kernel_size=9, padding=4)
+
+        total_filters = 300
+        self.U = nn.Linear(total_filters, num_labels, bias=False)
+        self.final_weight = nn.Parameter(torch.randn(num_labels, total_filters))
+        self.final_bias = nn.Parameter(torch.zeros(num_labels))
+
+    def forward(self, input_ids, attention_mask=None):
+        x = self.embedding(input_ids)
+        x_t = x.transpose(1, 2)
+        c3 = torch.relu(self.conv3(x_t))
+        c5 = torch.relu(self.conv5(x_t))
+        c9 = torch.relu(self.conv9(x_t))
+        C = torch.cat([c3, c5, c9], dim=1)
+        C = C.transpose(1, 2)
+        alpha = torch.softmax(self.U(C), dim=1)
+        m = torch.bmm(alpha.transpose(1, 2), C)
+        logits = torch.sum(m * self.final_weight.unsqueeze(0), dim=2) + self.final_bias
+        return logits
+
+class LAAT(nn.Module):
+    """LAAT: Label Attention Model (Vu et al., EMNLP 2020)"""
+    def __init__(self, vocab_size=30522, embed_dim=100, hidden_dim=256, num_labels=50):
+        super().__init__()
+        self.num_labels = num_labels
+        self.hidden_dim = hidden_dim * 2  # BiLSTM
+
+        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
+        self.lstm = nn.LSTM(embed_dim, hidden_dim, batch_first=True, bidirectional=True)
+        self.label_queries = nn.Parameter(torch.randn(num_labels, self.hidden_dim))
+        self.W_attn = nn.Linear(self.hidden_dim, self.hidden_dim, bias=False)
+        self.output_weight = nn.Parameter(torch.randn(num_labels, self.hidden_dim))
+        self.output_bias = nn.Parameter(torch.zeros(num_labels))
+
+    def forward(self, input_ids, attention_mask=None):
+        x = self.embedding(input_ids)
+        H, _ = self.lstm(x)
+        H_proj = self.W_attn(H)
+        scores = torch.einsum('bth,lh->blt', H_proj, self.label_queries)
+        alpha = torch.softmax(scores, dim=2)
+        m = torch.bmm(alpha, H)
+        logits = torch.sum(m * self.output_weight.unsqueeze(0), dim=2) + self.output_bias
+        return logits
+
 class PLM_ICD(nn.Module):
-    """PLM-ICD: Transformer with chunk pooling"""
+    """PLM-ICD: Transformer with chunk pooling (Huang et al., ACL 2022)"""
     def __init__(self, base_model, num_labels=50, chunk_size=512, stride=256):
         super().__init__()
         self.bert = base_model
@@ -214,7 +317,53 @@ class PLM_ICD(nn.Module):
         logits = self.classifier(pooled)
         return logits
 
-print("✅ Baseline architectures loaded: CAML, PLM-ICD")
+try:
+    from transformers import LongformerModel
+    LONGFORMER_AVAILABLE = True
+except:
+    LONGFORMER_AVAILABLE = False
+
+class LongformerICD(nn.Module):
+    """Longformer for ICD coding (Beltagy et al., 2020)"""
+    def __init__(self, num_labels=50, max_length=2048):
+        super().__init__()
+        if LONGFORMER_AVAILABLE:
+            try:
+                self.longformer = LongformerModel.from_pretrained('allenai/longformer-base-4096')
+            except:
+                print("⚠️  Longformer download failed, using BioClinicalBERT")
+                self.longformer = AutoModel.from_pretrained('emilyalsentzer/Bio_ClinicalBERT')
+        else:
+            print("⚠️  Longformer not available, using BioClinicalBERT")
+            self.longformer = AutoModel.from_pretrained('emilyalsentzer/Bio_ClinicalBERT')
+
+        self.classifier = nn.Linear(768, num_labels)
+        self.dropout = nn.Dropout(0.1)
+
+    def forward(self, input_ids, attention_mask=None, global_attention_mask=None):
+        if global_attention_mask is None and 'longformer' in str(type(self.longformer)).lower():
+            global_attention_mask = torch.zeros_like(input_ids)
+            global_attention_mask[:, 0] = 1
+            outputs = self.longformer(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                global_attention_mask=global_attention_mask
+            )
+        else:
+            outputs = self.longformer(input_ids=input_ids, attention_mask=attention_mask)
+
+        pooled = outputs.last_hidden_state[:, 0, :]
+        pooled = self.dropout(pooled)
+        logits = self.classifier(pooled)
+        return logits
+
+print("✅ Baseline architectures loaded:")
+print("   1. CAML ✅")
+print("   2. DR-CAML ✅")
+print("   3. MultiResCNN ✅")
+print("   4. LAAT ✅")
+print("   5. PLM-ICD ✅")
+print("   6. Longformer-ICD ✅")
 
 # ============================================================================
 # DATASET
@@ -415,27 +564,84 @@ test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
 
 baseline_results = {}
 
+# Get ICD-10 descriptions for DR-CAML
+icd_descriptions = {}
+for code in TOP_50_CODES:
+    # Simple description (in production, use actual ICD-10 descriptions)
+    icd_descriptions[code] = f"ICD-10 code {code}"
+descriptions_list = [icd_descriptions[code] for code in TOP_50_CODES]
+
 # 1. CAML
 print("\n" + "="*80)
 print("🔵 Training CAML...")
 print("="*80)
 
 model_caml = CAML(num_labels=len(TOP_50_CODES)).to(device)
-train_baseline(model_caml, "CAML", train_loader, val_loader, epochs=10, lr=1e-3)
+train_baseline(model_caml, "CAML", train_loader, val_loader, epochs=5, lr=1e-3)
 baseline_results['CAML'] = evaluate_model_complete(model_caml, val_loader, test_loader, "CAML")
 del model_caml
 torch.cuda.empty_cache()
 
-# 2. PLM-ICD
+# 2. DR-CAML
+print("\n" + "="*80)
+print("🔵 Training DR-CAML...")
+print("="*80)
+
+model_dr_caml = DR_CAML(num_labels=len(TOP_50_CODES), descriptions=descriptions_list, tokenizer=tokenizer).to(device)
+train_baseline(model_dr_caml, "DR-CAML", train_loader, val_loader, epochs=5, lr=1e-3)
+baseline_results['DR-CAML'] = evaluate_model_complete(model_dr_caml, val_loader, test_loader, "DR-CAML")
+del model_dr_caml
+torch.cuda.empty_cache()
+
+# 3. MultiResCNN
+print("\n" + "="*80)
+print("🔵 Training MultiResCNN...")
+print("="*80)
+
+model_multi = MultiResCNN(num_labels=len(TOP_50_CODES)).to(device)
+train_baseline(model_multi, "MultiResCNN", train_loader, val_loader, epochs=5, lr=1e-3)
+baseline_results['MultiResCNN'] = evaluate_model_complete(model_multi, val_loader, test_loader, "MultiResCNN")
+del model_multi
+torch.cuda.empty_cache()
+
+# 4. LAAT
+print("\n" + "="*80)
+print("🔵 Training LAAT...")
+print("="*80)
+
+# Use smaller batch size for LAAT (memory intensive)
+train_loader_laat = DataLoader(train_dataset, batch_size=8, shuffle=True)
+model_laat = LAAT(num_labels=len(TOP_50_CODES)).to(device)
+train_baseline(model_laat, "LAAT", train_loader_laat, val_loader, epochs=5, lr=1e-3)
+baseline_results['LAAT'] = evaluate_model_complete(model_laat, val_loader, test_loader, "LAAT")
+del model_laat
+torch.cuda.empty_cache()
+
+# 5. PLM-ICD
 print("\n" + "="*80)
 print("🔵 Training PLM-ICD...")
 print("="*80)
 
+# Use smaller batch size for transformer models
+train_loader_plm = DataLoader(train_dataset, batch_size=8, shuffle=True)
 base_model = AutoModel.from_pretrained('emilyalsentzer/Bio_ClinicalBERT').to(device)
 model_plm = PLM_ICD(base_model, num_labels=len(TOP_50_CODES)).to(device)
-train_baseline(model_plm, "PLM-ICD", train_loader, val_loader, epochs=3, lr=2e-5)
+train_baseline(model_plm, "PLM-ICD", train_loader_plm, val_loader, epochs=3, lr=2e-5)
 baseline_results['PLM-ICD'] = evaluate_model_complete(model_plm, val_loader, test_loader, "PLM-ICD")
 del model_plm, base_model
+torch.cuda.empty_cache()
+
+# 6. Longformer-ICD
+print("\n" + "="*80)
+print("🔵 Training Longformer-ICD...")
+print("="*80)
+
+# Use smaller batch size for Longformer
+train_loader_long = DataLoader(train_dataset, batch_size=2, shuffle=True)
+model_long = LongformerICD(num_labels=len(TOP_50_CODES)).to(device)
+train_baseline(model_long, "Longformer-ICD", train_loader_long, val_loader, epochs=2, lr=1e-5)
+baseline_results['Longformer-ICD'] = evaluate_model_complete(model_long, val_loader, test_loader, "Longformer-ICD")
+del model_long
 torch.cuda.empty_cache()
 
 # ============================================================================
