@@ -499,7 +499,7 @@ phase3_checkpoint_path = OUTPUT_BASE / 'checkpoints' / 'phase3' / 'phase3_best.p
 if phase3_checkpoint_path.exists():
     # Always create RAG object to ensure model layers are created
     # (even if corpus file is missing, we need the architecture to match checkpoint)
-    evidence_path = OUTPUT_BASE / 'concept_store' / 'evidence_corpus_top50.json'
+    evidence_path = OUTPUT_BASE / 'evidence_store' / 'evidence_corpus_top50.json'
     if evidence_path.exists() and FAISS_AVAILABLE:
         with open(evidence_path, 'r') as f:
             evidence_corpus = json.load(f)
