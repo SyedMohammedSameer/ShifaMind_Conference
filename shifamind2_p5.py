@@ -957,8 +957,15 @@ for model_name, model in baseline_models.items():
     if checkpoint_path.exists():
         print(f"📥 Loading existing checkpoint...")
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        tuned_threshold = checkpoint.get('threshold', 0.5)
+
+        # Handle old checkpoint format (just state dict) vs new format (dict with keys)
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            tuned_threshold = checkpoint.get('threshold', 0.5)
+        else:
+            # Old format - just state dict, retrain instead
+            print(f"⚠️  Old checkpoint format detected - retraining...")
+            tuned_threshold = train_baseline(model, model_name, train_loader, val_loader, config)
     else:
         tuned_threshold = train_baseline(model, model_name, train_loader, val_loader, config)
 
