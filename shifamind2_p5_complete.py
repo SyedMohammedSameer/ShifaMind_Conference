@@ -102,10 +102,10 @@ with open(SHARED_DATA_PATH / 'train_split.pkl', 'rb') as f:
 
 print(f"✅ Train: {len(df_train)}, Val: {len(df_val)}, Test: {len(df_test)}")
 
-# Calculate top-k
+# Use TOP_K = 5 to match fair comparison
+TOP_K = 5
 avg_labels_per_sample = np.mean([len(labels) for labels in df_val['labels'].tolist()])
-TOP_K = max(1, int(round(avg_labels_per_sample)))
-print(f"📊 Top-k = {TOP_K}")
+print(f"📊 Top-k = {TOP_K} (avg labels per sample: {avg_labels_per_sample:.2f})")
 
 # ============================================================================
 # SECTION A: LOAD SHIFAMIND ABLATION RESULTS
@@ -115,7 +115,7 @@ print("\n" + "="*80)
 print("📍 SECTION A: LOADING SHIFAMIND ABLATION RESULTS")
 print("="*80)
 
-fair_results_path = OUTPUT_BASE / 'results' / 'phase5_fair' / 'all_results.json'
+fair_results_path = OUTPUT_BASE / 'results' / 'phase5_fair' / 'fair_evaluation_results.json'
 
 if not fair_results_path.exists():
     print(f"❌ Fair comparison results not found at {fair_results_path}")
@@ -123,7 +123,8 @@ if not fair_results_path.exists():
     sys.exit(1)
 
 with open(fair_results_path, 'r') as f:
-    shifamind_results = json.load(f)
+    fair_data = json.load(f)
+    shifamind_results = fair_data['models']  # Extract models from JSON structure
 
 print(f"✅ Loaded ShifaMind results:")
 for model_name in shifamind_results:
@@ -136,17 +137,24 @@ if phase2_results_path.exists():
     with open(phase2_results_path, 'r') as f:
         phase2_data = json.load(f)
 
-    # Convert to fair comparison format (assuming it used tuned threshold)
+    # Convert to fair comparison format (Phase 2 only has tuned threshold results)
     shifamind_results['ShifaMind w/ GraphSAGE w/o RAG (Phase 2)'] = {
+        'validation': {
+            'fixed_05': {'macro_f1': 0.0, 'micro_f1': 0.0},
+            'tuned': {'macro_f1': 0.0, 'micro_f1': 0.0},
+            'topk': {'macro_f1': 0.0, 'micro_f1': 0.0}
+        },
         'test': {
+            'fixed_05': {'macro_f1': 0.0, 'micro_f1': 0.0},
             'tuned': {
                 'macro_f1': phase2_data['diagnosis_metrics']['macro_f1'],
                 'micro_f1': phase2_data['diagnosis_metrics']['micro_f1']
-            }
+            },
+            'topk': {'macro_f1': 0.0, 'micro_f1': 0.0}
         },
         'tuned_threshold': phase2_data.get('threshold', 0.5)
     }
-    print(f"   - Phase 2: Test Macro-F1 = {phase2_data['diagnosis_metrics']['macro_f1']:.4f}")
+    print(f"   - Phase 2: Test Macro-F1 @ Tuned = {phase2_data['diagnosis_metrics']['macro_f1']:.4f}")
 else:
     print("   ⚠️  Phase 2 results not found - skipping")
 
