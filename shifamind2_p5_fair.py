@@ -241,18 +241,20 @@ print("\n" + "="*80)
 print("🏗️  LOADING SHIFAMIND MODELS")
 print("="*80)
 
-def fix_checkpoint_keys(state_dict, rename_base_to_bert=True):
+def fix_checkpoint_keys(state_dict, rename_base_to_bert=True, skip_concept_embeddings=True):
     """Fix key names from checkpoint to match model architecture
 
     Args:
         state_dict: The checkpoint state dict
         rename_base_to_bert: If True, rename base_model.* to bert.* (for Phase 3)
                              If False, keep as base_model.* (for Phase 1)
+        skip_concept_embeddings: If True, skip concept_embeddings from state dict (for Phase 3)
+                                 If False, include it (for Phase 1)
     """
     new_state_dict = {}
     for key, value in state_dict.items():
-        # Skip concept_embeddings (loaded separately)
-        if key == 'concept_embeddings':
+        # Skip concept_embeddings only for Phase 3 (loaded separately)
+        if key == 'concept_embeddings' and skip_concept_embeddings:
             continue
 
         # Rename base_model.* to bert.* for Phase 3
@@ -476,12 +478,13 @@ if phase1_checkpoint_path.exists():
     model_p1 = ShifaMind2Phase1(base_model, len(ALL_CONCEPTS), len(TOP_50_CODES)).to(device)
 
     checkpoint = torch.load(phase1_checkpoint_path, map_location=device, weights_only=False)
-    # Fix key names from checkpoint (keep base_model.* for Phase 1)
-    fixed_state_dict = fix_checkpoint_keys(checkpoint['model_state_dict'], rename_base_to_bert=False)
+    # Fix key names from checkpoint (keep base_model.* and include concept_embeddings for Phase 1)
+    fixed_state_dict = fix_checkpoint_keys(checkpoint['model_state_dict'],
+                                            rename_base_to_bert=False,
+                                            skip_concept_embeddings=False)
     model_p1.load_state_dict(fixed_state_dict)
 
-    # Load concept embeddings into the model parameter
-    model_p1.concept_embeddings.data = checkpoint['concept_embeddings']
+    # Get concept embeddings from the loaded model
     concept_embeddings = model_p1.concept_embeddings.detach()
 
     shifamind_results['ShifaMind w/o GraphSAGE (Phase 1)'] = evaluate_model_complete(
@@ -510,8 +513,10 @@ if phase3_checkpoint_path.exists():
     model_p3 = ShifaMind2Phase3(base_model, rag, len(ALL_CONCEPTS), len(TOP_50_CODES)).to(device)
 
     checkpoint = torch.load(phase3_checkpoint_path, map_location=device, weights_only=False)
-    # Fix key names from checkpoint (rename base_model.* to bert.* for Phase 3)
-    fixed_state_dict = fix_checkpoint_keys(checkpoint['model_state_dict'], rename_base_to_bert=True)
+    # Fix key names from checkpoint (rename base_model.* to bert.* and skip concept_embeddings for Phase 3)
+    fixed_state_dict = fix_checkpoint_keys(checkpoint['model_state_dict'],
+                                            rename_base_to_bert=True,
+                                            skip_concept_embeddings=True)
     model_p3.load_state_dict(fixed_state_dict)
 
     # Load concept embeddings externally for Phase 3
