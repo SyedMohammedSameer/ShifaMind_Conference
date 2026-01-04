@@ -497,7 +497,8 @@ if phase1_checkpoint_path.exists():
 print("\n🔵 Phase 3 (Full ShifaMind with RAG)...")
 phase3_checkpoint_path = OUTPUT_BASE / 'checkpoints' / 'phase3' / 'phase3_best.pt'
 if phase3_checkpoint_path.exists():
-    # Load RAG corpus
+    # Always create RAG object to ensure model layers are created
+    # (even if corpus file is missing, we need the architecture to match checkpoint)
     evidence_path = OUTPUT_BASE / 'concept_store' / 'evidence_corpus_top50.json'
     if evidence_path.exists() and FAISS_AVAILABLE:
         with open(evidence_path, 'r') as f:
@@ -506,8 +507,9 @@ if phase3_checkpoint_path.exists():
         rag.build_index(evidence_corpus)
         print(f"   ✅ RAG loaded: {len(evidence_corpus)} passages")
     else:
-        rag = None
-        print("   ⚠️  RAG not available")
+        # Create dummy RAG to match checkpoint architecture
+        rag = SimpleRAG(top_k=3, threshold=0.7)
+        print("   ⚠️  RAG corpus not found - using empty RAG (model architecture preserved)")
 
     base_model = AutoModel.from_pretrained('emilyalsentzer/Bio_ClinicalBERT').to(device)
     model_p3 = ShifaMind2Phase3(base_model, rag, len(ALL_CONCEPTS), len(TOP_50_CODES)).to(device)
