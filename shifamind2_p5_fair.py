@@ -241,12 +241,22 @@ print("\n" + "="*80)
 print("🏗️  LOADING SHIFAMIND MODELS")
 print("="*80)
 
-def fix_checkpoint_keys(state_dict):
-    """Fix key names from checkpoint to match model architecture"""
+def fix_checkpoint_keys(state_dict, rename_base_to_bert=True):
+    """Fix key names from checkpoint to match model architecture
+
+    Args:
+        state_dict: The checkpoint state dict
+        rename_base_to_bert: If True, rename base_model.* to bert.* (for Phase 3)
+                             If False, keep as base_model.* (for Phase 1)
+    """
     new_state_dict = {}
     for key, value in state_dict.items():
-        # Rename base_model.* to bert.*
-        if key.startswith('base_model.'):
+        # Skip concept_embeddings (loaded separately)
+        if key == 'concept_embeddings':
+            continue
+
+        # Rename base_model.* to bert.* for Phase 3
+        if rename_base_to_bert and key.startswith('base_model.'):
             new_key = key.replace('base_model.', 'bert.')
             new_state_dict[new_key] = value
         else:
@@ -284,29 +294,109 @@ class SimpleRAG:
                 relevant_texts.append(self.documents[idx]['text'])
         return " ".join(relevant_texts) if relevant_texts else ""
 
+# ConceptBottleneckCrossAttention module for Phase 1
+class ConceptBottleneckCrossAttention(nn.Module):
+    """Multiplicative concept bottleneck with cross-attention"""
+    def __init__(self, hidden_size, num_heads=8, dropout=0.1, layer_idx=1):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+        self.layer_idx = layer_idx
+
+        self.query = nn.Linear(hidden_size, hidden_size)
+        self.key = nn.Linear(hidden_size, hidden_size)
+        self.value = nn.Linear(hidden_size, hidden_size)
+        self.out_proj = nn.Linear(hidden_size, hidden_size)
+
+        self.gate_net = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Sigmoid()
+        )
+
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(hidden_size)
+
+    def forward(self, hidden_states, concept_embeddings, attention_mask=None):
+        batch_size, seq_len, _ = hidden_states.shape
+        num_concepts = concept_embeddings.shape[0]
+
+        concepts_batch = concept_embeddings.unsqueeze(0).expand(batch_size, -1, -1)
+
+        Q = self.query(hidden_states).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        K = self.key(concepts_batch).view(batch_size, num_concepts, self.num_heads, self.head_dim).transpose(1, 2)
+        V = self.value(concepts_batch).view(batch_size, num_concepts, self.num_heads, self.head_dim).transpose(1, 2)
+
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+
+        context = torch.matmul(attn_weights, V)
+        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
+        context = self.out_proj(context)
+
+        pooled_text = hidden_states.mean(dim=1, keepdim=True).expand(-1, seq_len, -1)
+        pooled_context = context.mean(dim=1, keepdim=True).expand(-1, seq_len, -1)
+        gate_input = torch.cat([pooled_text, pooled_context], dim=-1)
+        gate = self.gate_net(gate_input)
+
+        output = gate * context
+        output = self.layer_norm(output)
+
+        return output, attn_weights.mean(dim=1), gate.mean()
+
 # Phase 1 Model (Concept Bottleneck only)
 class ShifaMind2Phase1(nn.Module):
-    def __init__(self, base_model, num_concepts, num_diagnoses, hidden_size=768):
+    """ShifaMind2 Phase 1: Concept Bottleneck with Top-50 ICD-10"""
+    def __init__(self, base_model, num_concepts, num_classes, fusion_layers=[9, 11]):
         super().__init__()
-        self.bert = base_model
-        self.cross_attention = nn.MultiheadAttention(embed_dim=hidden_size, num_heads=8, dropout=0.1, batch_first=True)
-        self.gate_net = nn.Sequential(nn.Linear(hidden_size * 2, hidden_size), nn.Sigmoid())
-        self.layer_norm = nn.LayerNorm(hidden_size)
-        self.concept_head = nn.Linear(hidden_size, num_concepts)
-        self.diagnosis_head = nn.Linear(hidden_size, num_diagnoses)
+        self.base_model = base_model
+        self.hidden_size = base_model.config.hidden_size
+        self.num_concepts = num_concepts
+        self.fusion_layers = fusion_layers
 
-    def forward(self, input_ids, attention_mask, concept_embeddings, input_texts=None):
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        pooled_bert = outputs.last_hidden_state.mean(dim=1)
-        fused_states = pooled_bert.unsqueeze(1).expand(-1, outputs.last_hidden_state.shape[1], -1)
-        bert_concepts = concept_embeddings.unsqueeze(0).expand(input_ids.shape[0], -1, -1)
-        concept_context, _ = self.cross_attention(query=fused_states, key=bert_concepts, value=bert_concepts)
-        pooled_context = concept_context.mean(dim=1)
-        gate = self.gate_net(torch.cat([pooled_bert, pooled_context], dim=-1))
-        bottleneck_output = self.layer_norm(gate * pooled_context)
+        self.concept_embeddings = nn.Parameter(
+            torch.randn(num_concepts, self.hidden_size) * 0.02
+        )
+
+        self.fusion_modules = nn.ModuleDict({
+            str(layer): ConceptBottleneckCrossAttention(self.hidden_size, layer_idx=layer)
+            for layer in fusion_layers
+        })
+
+        self.concept_head = nn.Linear(self.hidden_size, num_concepts)
+        self.diagnosis_head = nn.Linear(self.hidden_size, num_classes)
+        self.dropout = nn.Dropout(0.1)
+
+    def forward(self, input_ids, attention_mask, concept_embeddings_external, input_texts=None):
+        outputs = self.base_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True
+        )
+
+        hidden_states = outputs.hidden_states
+        current_hidden = outputs.last_hidden_state
+
+        for layer_idx in self.fusion_layers:
+            if str(layer_idx) in self.fusion_modules:
+                layer_hidden = hidden_states[layer_idx]
+                fused_hidden, attn, gate = self.fusion_modules[str(layer_idx)](
+                    layer_hidden, self.concept_embeddings, attention_mask
+                )
+                current_hidden = fused_hidden
+
+        cls_hidden = self.dropout(current_hidden[:, 0, :])
+        concept_scores = torch.sigmoid(self.concept_head(cls_hidden))
+        diagnosis_logits = self.diagnosis_head(cls_hidden)
+
         return {
-            'logits': self.diagnosis_head(bottleneck_output),
-            'concept_logits': self.concept_head(pooled_bert)
+            'logits': diagnosis_logits,
+            'concept_scores': concept_scores
         }
 
 # Phase 3 Model (Full ShifaMind with RAG)
@@ -386,11 +476,13 @@ if phase1_checkpoint_path.exists():
     model_p1 = ShifaMind2Phase1(base_model, len(ALL_CONCEPTS), len(TOP_50_CODES)).to(device)
 
     checkpoint = torch.load(phase1_checkpoint_path, map_location=device, weights_only=False)
-    # Fix key names from checkpoint
-    fixed_state_dict = fix_checkpoint_keys(checkpoint['model_state_dict'])
+    # Fix key names from checkpoint (keep base_model.* for Phase 1)
+    fixed_state_dict = fix_checkpoint_keys(checkpoint['model_state_dict'], rename_base_to_bert=False)
     model_p1.load_state_dict(fixed_state_dict)
-    concept_embedding_layer.weight.data = checkpoint['concept_embeddings']
-    concept_embeddings = concept_embedding_layer.weight.detach()
+
+    # Load concept embeddings into the model parameter
+    model_p1.concept_embeddings.data = checkpoint['concept_embeddings']
+    concept_embeddings = model_p1.concept_embeddings.detach()
 
     shifamind_results['ShifaMind w/o GraphSAGE (Phase 1)'] = evaluate_model_complete(
         model_p1, val_loader, test_loader, "Phase 1", has_rag=True, concept_embeddings=concept_embeddings
@@ -418,9 +510,11 @@ if phase3_checkpoint_path.exists():
     model_p3 = ShifaMind2Phase3(base_model, rag, len(ALL_CONCEPTS), len(TOP_50_CODES)).to(device)
 
     checkpoint = torch.load(phase3_checkpoint_path, map_location=device, weights_only=False)
-    # Fix key names from checkpoint
-    fixed_state_dict = fix_checkpoint_keys(checkpoint['model_state_dict'])
+    # Fix key names from checkpoint (rename base_model.* to bert.* for Phase 3)
+    fixed_state_dict = fix_checkpoint_keys(checkpoint['model_state_dict'], rename_base_to_bert=True)
     model_p3.load_state_dict(fixed_state_dict)
+
+    # Load concept embeddings externally for Phase 3
     concept_embedding_layer.weight.data = checkpoint['concept_embeddings']
     concept_embeddings = concept_embedding_layer.weight.detach()
 
