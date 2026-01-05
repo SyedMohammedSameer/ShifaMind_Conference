@@ -82,12 +82,12 @@ print(f"✅ {len(TOP_50_CODES)} diagnoses, {len(ALL_CONCEPTS)} concepts")
 
 # GPU OPTIMIZATION SETTINGS
 USE_AMP = True  # Automatic Mixed Precision (2x speedup)
-NUM_WORKERS = 2  # Parallel data loading
+NUM_WORKERS = 0  # Disabled to avoid multiprocessing issues in Colab
 PIN_MEMORY = True  # Faster CPU->GPU transfer
 
 print(f"\n⚡ GPU Optimizations:")
 print(f"   - Mixed Precision (AMP): {USE_AMP}")
-print(f"   - Data Loading Workers: {NUM_WORKERS}")
+print(f"   - Data Loading Workers: {NUM_WORKERS} (disabled for stability)")
 print(f"   - Pin Memory: {PIN_MEMORY}")
 
 # ============================================================================
