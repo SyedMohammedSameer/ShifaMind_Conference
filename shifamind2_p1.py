@@ -301,21 +301,17 @@ df = df.dropna(subset=['text'])
 
 print(f"\n📊 Dataset size: {len(df):,} samples")
 
-# Stratified split (approximate - use first label for stratification)
-df['first_label'] = df['labels'].apply(lambda x: x.index(1) if 1 in x else -1)
-
+# Random split (stratification not feasible with Top-50 multilabel)
 # Split: 70% train, 15% val, 15% test
 train_idx, temp_idx = train_test_split(
     range(len(df)),
     test_size=0.3,
-    random_state=SEED,
-    stratify=df['first_label']
+    random_state=SEED
 )
 val_idx, test_idx = train_test_split(
     temp_idx,
     test_size=0.5,
-    random_state=SEED,
-    stratify=df.iloc[temp_idx]['first_label']
+    random_state=SEED
 )
 
 df_train = df.iloc[train_idx].reset_index(drop=True)
@@ -328,10 +324,11 @@ print(f"   Val:   {len(df_val):,} ({len(df_val)/len(df)*100:.1f}%)")
 print(f"   Test:  {len(df_test):,} ({len(df_test)/len(df)*100:.1f}%)")
 
 # Label distribution per split
-print(f"\n   Label distribution:")
+print(f"\n📊 Label distribution per split:")
 for split_name, split_df in [('Train', df_train), ('Val', df_val), ('Test', df_test)]:
     avg_labels = np.mean([sum(x) for x in split_df['labels']])
-    print(f"      {split_name}: {avg_labels:.2f} labels/sample")
+    total_positives = sum([sum(x) for x in split_df['labels']])
+    print(f"   {split_name}: avg={avg_labels:.2f} labels/sample, total={total_positives:,} positive labels")
 
 # Save splits
 with open(SHARED_DATA_PATH / 'train_split.pkl', 'wb') as f:

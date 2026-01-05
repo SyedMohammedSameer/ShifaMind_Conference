@@ -1,38 +1,30 @@
 #!/usr/bin/env python3
 """
 ================================================================================
-SHIFAMIND2 PHASE 5: Ablations + SOTA Baselines (Top-50 ICD-10)
+SHIFAMIND2 PHASE 5: Ablations + SOTA Baselines (Top-50 ICD-10) - FIXED
 ================================================================================
 Author: Mohammed Sameer Syed
 University of Arizona - MS in AI Capstone
 
-CHANGES FROM SHIFAMIND1_P5:
-1. ✅ Uses Top-50 ICD-10 codes
-2. ✅ NEW baseline implementations:
-   - CAML (Convolutional Attention for Multi-Label)
-   - DR-CAML (Explainable Prediction of Medical Codes)
-   - MultiResCNN (Multi-Filter Residual CNN)
-   - LAAT (Label Attention Model)
-   - PLM-ICD (Pre-trained Language Model for ICD Coding)
-   - Longformer-based ICD model
-   - ShifaMind (ours)
-3. ✅ All baselines use SAME Top-50 label space
-4. ✅ All baselines use SAME train/val/test splits
-5. ✅ Report micro-F1, macro-F1, per-label F1
-
-Baseline Implementations:
-- CAML: CNN + per-label attention (Mullenbach et al., NAACL 2018)
-- DR-CAML: CAML + description regularization
-- MultiResCNN: Multi-scale CNN (Li & Yu, AAAI 2020)
-- LAAT: Label-attention model (Vu et al., EMNLP 2020)
-- PLM-ICD: Transformer + chunk pooling (Huang et al., ACL 2022)
-- Longformer: Long-document transformer (Beltagy et al., 2020)
+MAJOR FIXES APPLIED:
+1. ✅ Threshold tuning on validation set (per-label + global)
+2. ✅ Top-k prediction (k=5, avg labels per sample)
+3. ✅ Positive class weighting (BCEWithLogitsLoss pos_weight)
+4. ✅ Correct CAML: per-label weights (not shared classifier)
+5. ✅ Correct DR-CAML: description regularization with ICD-10 descriptions
+6. ✅ Correct MultiResCNN: label-wise attention added
+7. ✅ Correct LAAT: label-specific attention mechanism
+8. ✅ Correct PLM-ICD: chunk pooling implemented
+9. ✅ Real Longformer: allenai/longformer-base-4096
+10. ✅ Model-specific training configs (5 epochs CNN, 3 transformers, etc.)
+11. ✅ Early stopping on validation micro-F1
+12. ✅ Diagnostics: mean prediction tracking, all-zero warnings
 
 ================================================================================
 """
 
 print("="*80)
-print("🚀 SHIFAMIND2 PHASE 5 - ABLATIONS + SOTA BASELINES (TOP-50)")
+print("🚀 SHIFAMIND2 PHASE 5 - ABLATIONS + SOTA BASELINES (TOP-50) [FIXED]")
 print("="*80)
 
 # ============================================================================
@@ -50,13 +42,13 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import pandas as pd
 from sklearn.metrics import f1_score, precision_score, recall_score
-from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warmup
+from transformers import AutoTokenizer, AutoModel, AutoModelForSequenceClassification, LongformerTokenizer, LongformerModel
 
 import json
 import pickle
 from pathlib import Path
 from tqdm.auto import tqdm
-from typing import Dict, List
+from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 import sys
 import time
@@ -133,83 +125,200 @@ print(f"✅ Train set: {len(df_train)} samples")
 print(f"✅ Val set:   {len(df_val)} samples")
 print(f"✅ Test set:  {len(df_test)} samples")
 
+# Compute positive class weights for imbalance
+train_labels = np.array(df_train['labels'].tolist())
+pos_counts = train_labels.sum(axis=0)  # [num_labels]
+neg_counts = len(train_labels) - pos_counts
+pos_weight = np.clip(neg_counts / np.maximum(pos_counts, 1), 1.0, 50.0)
+pos_weight_tensor = torch.tensor(pos_weight, dtype=torch.float32)
+
+print(f"\n⚖️  Positive class weights computed (median: {np.median(pos_weight):.2f}, max: {np.max(pos_weight):.2f})")
+
+# Average labels per sample (for top-k)
+avg_labels_per_sample = train_labels.sum(axis=1).mean()
+TOP_K = int(round(avg_labels_per_sample))
+print(f"📊 Average labels per sample: {avg_labels_per_sample:.2f} → Top-k = {TOP_K}")
+
 # ============================================================================
-# BASELINE MODELS (SOTA ICD CODING MODELS)
+# LOAD ICD-10 DESCRIPTIONS FOR DR-CAML
 # ============================================================================
 
 print("\n" + "="*80)
-print("🏗️  BASELINE MODEL ARCHITECTURES")
+print("📚 LOADING ICD-10 DESCRIPTIONS")
+print("="*80)
+
+ICD_DESC_PATH = BASE_PATH / '01_Raw_Datasets' / 'Extracted' / 'mimic-iv-3.1' / 'mimic-iv-3.1' / 'hosp' / 'd_icd_diagnoses.csv.gz'
+
+if ICD_DESC_PATH.exists():
+    icd_df = pd.read_csv(ICD_DESC_PATH, compression='gzip')
+    icd_df = icd_df[icd_df['icd_version'] == 10].copy()
+
+    # Normalize codes
+    def normalize_icd(code):
+        if pd.isna(code):
+            return None
+        code = str(code).strip().upper().replace('.', '')
+        return code
+
+    icd_df['icd_code_norm'] = icd_df['icd_code'].apply(normalize_icd)
+    icd_desc_map = dict(zip(icd_df['icd_code_norm'], icd_df['long_title'].fillna('')))
+
+    # Map to TOP_50_CODES
+    ICD_DESCRIPTIONS = {}
+    for code in TOP_50_CODES:
+        ICD_DESCRIPTIONS[code] = icd_desc_map.get(code, f"ICD-10 code {code}")
+
+    print(f"✅ Loaded {len(ICD_DESCRIPTIONS)} ICD-10 descriptions")
+    print(f"   Example: {TOP_50_CODES[0]} → {ICD_DESCRIPTIONS[TOP_50_CODES[0]][:60]}...")
+else:
+    print("⚠️  ICD descriptions not found - DR-CAML will use placeholders")
+    ICD_DESCRIPTIONS = {code: f"ICD-10 diagnosis code {code}" for code in TOP_50_CODES}
+
+# ============================================================================
+# BASELINE MODEL ARCHITECTURES (CORRECTED)
+# ============================================================================
+
+print("\n" + "="*80)
+print("🏗️  BASELINE MODEL ARCHITECTURES (FIXED IMPLEMENTATIONS)")
 print("="*80)
 
 # ----------------------------------------------------------------------------
-# 1. CAML (Convolutional Attention for Multi-Label classification)
-# Mullenbach et al., NAACL 2018
+# 1. CAML (FIXED: per-label weights)
 # ----------------------------------------------------------------------------
 
 class CAML(nn.Module):
     """
     CAML: Convolutional Attention for Multi-Label classification
+    Mullenbach et al., NAACL 2018
 
-    Architecture:
-    - 1D CNN over text embeddings
-    - Per-label attention mechanism
-    - Final linear classifier per label
+    FIXED: Per-label weight vectors (not shared classifier)
     """
     def __init__(self, vocab_size=30522, embed_dim=100, num_filters=50, num_labels=50):
         super().__init__()
+        self.num_labels = num_labels
+        self.num_filters = num_filters
+
         self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
         self.conv = nn.Conv1d(embed_dim, num_filters, kernel_size=4, padding=2)
 
         # Per-label attention
-        self.label_attention = nn.Linear(num_filters, num_labels)
-        self.classifier = nn.Linear(num_filters, num_labels)
+        self.U = nn.Linear(num_filters, num_labels, bias=False)  # Attention weights
+
+        # Per-label classification weights
+        self.final_weight = nn.Parameter(torch.randn(num_labels, num_filters))
+        self.final_bias = nn.Parameter(torch.zeros(num_labels))
 
     def forward(self, input_ids, attention_mask=None):
-        # Embed: [batch, seq_len, embed_dim]
-        x = self.embedding(input_ids)
+        batch_size = input_ids.size(0)
 
-        # Conv: [batch, num_filters, seq_len]
-        x = x.transpose(1, 2)
-        x = torch.tanh(self.conv(x))
+        # Embed + Conv
+        x = self.embedding(input_ids)  # [B, T, E]
+        x = x.transpose(1, 2)  # [B, E, T]
+        H = torch.tanh(self.conv(x))  # [B, F, T]
+        H = H.transpose(1, 2)  # [B, T, F]
 
         # Per-label attention
-        attn_weights = torch.softmax(self.label_attention(x.transpose(1, 2)), dim=1)
+        alpha = torch.softmax(self.U(H), dim=1)  # [B, T, L]
 
-        # Weighted pooling
-        x = torch.bmm(attn_weights.transpose(1, 2), x.transpose(1, 2))  # [batch, num_labels, num_filters]
+        # Weighted sum per label
+        m = torch.bmm(alpha.transpose(1, 2), H)  # [B, L, F]
 
-        # Classify
-        logits = self.classifier(x.mean(dim=1))  # [batch, num_labels]
+        # Per-label logits
+        logits = torch.sum(m * self.final_weight.unsqueeze(0), dim=2) + self.final_bias
 
         return logits
 
 # ----------------------------------------------------------------------------
-# 2. DR-CAML (CAML with Description Regularization)
-# Mullenbach et al., NAACL 2018
+# 2. DR-CAML (FIXED: description regularization)
 # ----------------------------------------------------------------------------
 
 class DR_CAML(nn.Module):
-    """DR-CAML: CAML + description regularization (simplified)"""
-    def __init__(self, vocab_size=30522, embed_dim=100, num_filters=50, num_labels=50):
-        super().__init__()
-        self.caml = CAML(vocab_size, embed_dim, num_filters, num_labels)
+    """
+    DR-CAML: CAML + description regularization
+    Mullenbach et al., NAACL 2018
 
-    def forward(self, input_ids, attention_mask=None):
-        return self.caml(input_ids, attention_mask)
+    FIXED: Actual description regularization with ICD-10 text
+    """
+    def __init__(self, vocab_size=30522, embed_dim=100, num_filters=50, num_labels=50,
+                 descriptions=None, tokenizer=None, lambda_desc=0.1):
+        super().__init__()
+        self.num_labels = num_labels
+        self.num_filters = num_filters
+        self.lambda_desc = lambda_desc
+
+        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
+        self.conv = nn.Conv1d(embed_dim, num_filters, kernel_size=4, padding=2)
+
+        # Per-label attention
+        self.U = nn.Linear(num_filters, num_labels, bias=False)
+
+        # Per-label classification weights
+        self.final_weight = nn.Parameter(torch.randn(num_labels, num_filters))
+        self.final_bias = nn.Parameter(torch.zeros(num_labels))
+
+        # Precompute description embeddings
+        if descriptions is not None and tokenizer is not None:
+            self.register_buffer('desc_embeddings', self._encode_descriptions(descriptions, tokenizer))
+        else:
+            self.register_buffer('desc_embeddings', torch.zeros(num_labels, num_filters))
+
+    def _encode_descriptions(self, descriptions, tokenizer):
+        """Encode ICD descriptions into num_filters-dim vectors"""
+        desc_vecs = []
+
+        for desc in descriptions:
+            # Tokenize
+            tokens = tokenizer(desc, truncation=True, max_length=128,
+                             padding='max_length', return_tensors='pt')
+            input_ids = tokens['input_ids']  # [1, 128]
+
+            # Embed + Conv + Maxpool
+            with torch.no_grad():
+                x = self.embedding(input_ids)  # [1, 128, embed_dim]
+                x = x.transpose(1, 2)  # [1, embed_dim, 128]
+                h = torch.tanh(self.conv(x))  # [1, num_filters, 128]
+                pooled = F.max_pool1d(h, kernel_size=h.size(2)).squeeze()  # [num_filters]
+
+            desc_vecs.append(pooled)
+
+        return torch.stack(desc_vecs)  # [num_labels, num_filters]
+
+    def forward(self, input_ids, attention_mask=None, return_reg_loss=False):
+        batch_size = input_ids.size(0)
+
+        # Same as CAML
+        x = self.embedding(input_ids)
+        x = x.transpose(1, 2)
+        H = torch.tanh(self.conv(x))
+        H = H.transpose(1, 2)
+
+        alpha = torch.softmax(self.U(H), dim=1)
+        m = torch.bmm(alpha.transpose(1, 2), H)
+
+        logits = torch.sum(m * self.final_weight.unsqueeze(0), dim=2) + self.final_bias
+
+        if return_reg_loss:
+            # Description regularization: ||W - D||^2
+            reg_loss = torch.mean((self.final_weight - self.desc_embeddings) ** 2)
+            return logits, reg_loss
+
+        return logits
 
 # ----------------------------------------------------------------------------
-# 3. MultiResCNN (Multi-Filter Residual CNN)
-# Li & Yu, AAAI 2020
+# 3. MultiResCNN (FIXED: label-wise attention)
 # ----------------------------------------------------------------------------
 
 class MultiResCNN(nn.Module):
     """
-    MultiResCNN: Multi-scale CNN with residual connections
+    MultiResCNN: Multi-scale CNN with label attention
+    Li & Yu, AAAI 2020
 
-    Uses multiple filter sizes (3, 5, 9) to capture multi-scale patterns
+    FIXED: Added label-wise attention (was missing)
     """
     def __init__(self, vocab_size=30522, embed_dim=100, num_labels=50):
         super().__init__()
+        self.num_labels = num_labels
+
         self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
 
         # Multi-scale convolutions
@@ -217,131 +326,191 @@ class MultiResCNN(nn.Module):
         self.conv5 = nn.Conv1d(embed_dim, 100, kernel_size=5, padding=2)
         self.conv9 = nn.Conv1d(embed_dim, 100, kernel_size=9, padding=4)
 
-        # Residual projection
-        self.residual_proj = nn.Linear(embed_dim, 300)
+        total_filters = 300
 
-        self.classifier = nn.Linear(300, num_labels)
+        # Label-wise attention (like CAML)
+        self.U = nn.Linear(total_filters, num_labels, bias=False)
+
+        # Per-label weights
+        self.final_weight = nn.Parameter(torch.randn(num_labels, total_filters))
+        self.final_bias = nn.Parameter(torch.zeros(num_labels))
 
     def forward(self, input_ids, attention_mask=None):
-        x = self.embedding(input_ids)  # [batch, seq_len, embed_dim]
-        x_t = x.transpose(1, 2)  # [batch, embed_dim, seq_len]
+        x = self.embedding(input_ids)  # [B, T, E]
+        x_t = x.transpose(1, 2)  # [B, E, T]
 
         # Multi-scale convolutions
-        c3 = torch.relu(self.conv3(x_t))
-        c5 = torch.relu(self.conv5(x_t))
-        c9 = torch.relu(self.conv9(x_t))
+        c3 = torch.relu(self.conv3(x_t))  # [B, 100, T]
+        c5 = torch.relu(self.conv5(x_t))  # [B, 100, T]
+        c9 = torch.relu(self.conv9(x_t))  # [B, 100, T]
 
         # Concatenate
-        c_all = torch.cat([c3, c5, c9], dim=1)  # [batch, 300, seq_len]
+        C = torch.cat([c3, c5, c9], dim=1)  # [B, 300, T]
+        C = C.transpose(1, 2)  # [B, T, 300]
 
-        # Max pooling
-        pooled = F.max_pool1d(c_all, kernel_size=c_all.size(2)).squeeze(2)
+        # Label-wise attention
+        alpha = torch.softmax(self.U(C), dim=1)  # [B, T, L]
+        m = torch.bmm(alpha.transpose(1, 2), C)  # [B, L, 300]
 
-        # Residual connection
-        residual = self.residual_proj(x.mean(dim=1))
-        out = pooled + residual
+        # Per-label logits
+        logits = torch.sum(m * self.final_weight.unsqueeze(0), dim=2) + self.final_bias
 
-        logits = self.classifier(out)
         return logits
 
 # ----------------------------------------------------------------------------
-# 4. LAAT (Label Attention Model)
-# Vu et al., EMNLP 2020
+# 4. LAAT (FIXED: label-specific attention)
 # ----------------------------------------------------------------------------
 
 class LAAT(nn.Module):
     """
-    LAAT: Label Attention Model for ICD coding
+    LAAT: Label Attention Model
+    Vu et al., EMNLP 2020
 
-    Uses label-specific attention to focus on relevant text spans
+    FIXED: Label-specific attention (was global)
     """
     def __init__(self, vocab_size=30522, embed_dim=100, hidden_dim=256, num_labels=50):
         super().__init__()
+        self.num_labels = num_labels
+        self.hidden_dim = hidden_dim * 2  # BiLSTM
+
         self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
         self.lstm = nn.LSTM(embed_dim, hidden_dim, batch_first=True, bidirectional=True)
 
-        # Label embeddings
-        self.label_embeddings = nn.Embedding(num_labels, hidden_dim * 2)
+        # Label query vectors
+        self.label_queries = nn.Parameter(torch.randn(num_labels, self.hidden_dim))
 
-        # Attention
-        self.attention = nn.Linear(hidden_dim * 2, hidden_dim * 2)
+        # Attention projection
+        self.W_attn = nn.Linear(self.hidden_dim, self.hidden_dim, bias=False)
 
-        self.classifier = nn.Linear(hidden_dim * 2, num_labels)
+        # Output per label
+        self.output_weight = nn.Parameter(torch.randn(num_labels, self.hidden_dim))
+        self.output_bias = nn.Parameter(torch.zeros(num_labels))
 
     def forward(self, input_ids, attention_mask=None):
+        batch_size = input_ids.size(0)
+
         x = self.embedding(input_ids)
+        H, _ = self.lstm(x)  # [B, T, hidden_dim*2]
 
-        # LSTM encoding
-        lstm_out, _ = self.lstm(x)  # [batch, seq_len, hidden_dim*2]
+        # Label-specific attention
+        H_proj = self.W_attn(H)  # [B, T, H]
 
-        # Label-specific attention (simplified)
-        attn_weights = torch.softmax(self.attention(lstm_out), dim=1)
-        context = torch.bmm(attn_weights.transpose(1, 2), lstm_out).squeeze(1)
+        # Compute scores for each label
+        # scores[b,l,t] = H_proj[b,t,:] · label_queries[l,:]
+        scores = torch.einsum('bth,lh->blt', H_proj, self.label_queries)  # [B, L, T]
+        alpha = torch.softmax(scores, dim=2)  # [B, L, T]
 
-        logits = self.classifier(context)
+        # Weighted context per label
+        m = torch.bmm(alpha, H)  # [B, L, H]
+
+        # Per-label logits
+        logits = torch.sum(m * self.output_weight.unsqueeze(0), dim=2) + self.output_bias
+
         return logits
 
 # ----------------------------------------------------------------------------
-# 5. PLM-ICD (Pre-trained Language Model for ICD Coding)
-# Huang et al., ACL 2022
+# 5. PLM-ICD (FIXED: chunk pooling)
 # ----------------------------------------------------------------------------
 
 class PLM_ICD(nn.Module):
     """
-    PLM-ICD: Transformer-based with chunk pooling
+    PLM-ICD: Transformer with chunk pooling
+    Huang et al., ACL 2022
 
-    Splits long documents into chunks, encodes each, then pools
+    FIXED: Actual chunk-based processing
     """
-    def __init__(self, base_model, num_labels=50, chunk_size=512):
+    def __init__(self, base_model, num_labels=50, chunk_size=512, stride=256):
         super().__init__()
         self.bert = base_model
         self.chunk_size = chunk_size
+        self.stride = stride
         self.classifier = nn.Linear(768, num_labels)
         self.dropout = nn.Dropout(0.1)
 
     def forward(self, input_ids, attention_mask=None):
-        # Simple pooling (in production, would do chunk-based processing)
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        pooled = outputs.last_hidden_state.mean(dim=1)
+        batch_size, seq_len = input_ids.size()
+
+        # If short enough, process normally
+        if seq_len <= self.chunk_size:
+            outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+            pooled = outputs.last_hidden_state.mean(dim=1)
+        else:
+            # Chunk processing
+            chunk_embeddings = []
+
+            for start in range(0, seq_len, self.stride):
+                end = min(start + self.chunk_size, seq_len)
+
+                chunk_ids = input_ids[:, start:end]
+                chunk_mask = attention_mask[:, start:end] if attention_mask is not None else None
+
+                outputs = self.bert(input_ids=chunk_ids, attention_mask=chunk_mask)
+                chunk_emb = outputs.last_hidden_state.mean(dim=1)  # [B, 768]
+                chunk_embeddings.append(chunk_emb)
+
+                if end >= seq_len:
+                    break
+
+            # Max pooling across chunks
+            pooled = torch.stack(chunk_embeddings, dim=1).max(dim=1)[0]  # [B, 768]
+
         pooled = self.dropout(pooled)
         logits = self.classifier(pooled)
+
         return logits
 
 # ----------------------------------------------------------------------------
-# 6. Longformer-ICD (Longformer for long medical documents)
-# Based on Beltagy et al., 2020
+# 6. Longformer-ICD (FIXED: real Longformer)
 # ----------------------------------------------------------------------------
 
 class LongformerICD(nn.Module):
     """
-    Longformer-based ICD coding model
+    Longformer for ICD coding
+    Beltagy et al., 2020
 
-    Uses BioClinicalBERT as approximation (Longformer would need special setup)
+    FIXED: Uses actual Longformer (was BioClinicalBERT)
     """
-    def __init__(self, base_model, num_labels=50):
+    def __init__(self, num_labels=50, max_length=2048):
         super().__init__()
-        self.bert = base_model
+        try:
+            self.longformer = LongformerModel.from_pretrained('allenai/longformer-base-4096')
+        except:
+            print("⚠️  Longformer not available, using BioClinicalBERT as fallback")
+            self.longformer = AutoModel.from_pretrained('emilyalsentzer/Bio_ClinicalBERT')
+
         self.classifier = nn.Linear(768, num_labels)
         self.dropout = nn.Dropout(0.1)
 
-    def forward(self, input_ids, attention_mask=None):
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        pooled = outputs.last_hidden_state.mean(dim=1)
+    def forward(self, input_ids, attention_mask=None, global_attention_mask=None):
+        # Set global attention on CLS token
+        if global_attention_mask is None and hasattr(self.longformer, 'config') and 'longformer' in str(type(self.longformer)).lower():
+            global_attention_mask = torch.zeros_like(input_ids)
+            global_attention_mask[:, 0] = 1
+
+            outputs = self.longformer(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                global_attention_mask=global_attention_mask
+            )
+        else:
+            outputs = self.longformer(input_ids=input_ids, attention_mask=attention_mask)
+
+        pooled = outputs.last_hidden_state[:, 0, :]  # CLS token
         pooled = self.dropout(pooled)
         logits = self.classifier(pooled)
+
         return logits
 
-print("✅ Baseline architectures defined:")
-print("   1. CAML - CNN + per-label attention")
-print("   2. DR-CAML - CAML + description regularization")
-print("   3. MultiResCNN - Multi-scale CNN with residual")
-print("   4. LAAT - Label attention model")
-print("   5. PLM-ICD - Transformer + chunk pooling")
-print("   6. Longformer-ICD - Long-document transformer")
-print("   7. ShifaMind - Concept bottleneck + GraphSAGE + RAG (ours)")
+print("✅ Architectures defined with corrections:")
+print("   1. CAML - Per-label weights ✅")
+print("   2. DR-CAML - Description regularization ✅")
+print("   3. MultiResCNN - Label-wise attention ✅")
+print("   4. LAAT - Label-specific attention ✅")
+print("   5. PLM-ICD - Chunk pooling ✅")
+print("   6. Longformer-ICD - Real Longformer ✅")
 
 # ============================================================================
-# DATASET & EVALUATION
+# DATASET
 # ============================================================================
 
 class SimpleDataset(Dataset):
@@ -369,12 +538,97 @@ class SimpleDataset(Dataset):
             'labels': torch.tensor(self.labels[idx], dtype=torch.float)
         }
 
-def evaluate_model(model, test_loader, model_name="Model"):
-    """Comprehensive evaluation"""
+# ============================================================================
+# THRESHOLD TUNING
+# ============================================================================
+
+def tune_thresholds(model, val_loader, model_name="Model", search_global=True):
+    """
+    Tune decision thresholds on validation set
+
+    Returns:
+        - best_threshold (float or np.array): global or per-label thresholds
+        - best_f1 (float): validation micro-F1 at best threshold
+    """
+    print(f"\n🔧 Tuning thresholds for {model_name} on validation set...")
+
     model.eval()
-    all_preds = []
+    all_probs = []
     all_labels = []
-    inference_times = []
+
+    with torch.no_grad():
+        for batch in tqdm(val_loader, desc="Collecting predictions"):
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            labels = batch['labels'].to(device)
+
+            logits = model(input_ids, attention_mask)
+            probs = torch.sigmoid(logits).cpu().numpy()
+
+            all_probs.append(probs)
+            all_labels.append(labels.cpu().numpy())
+
+    all_probs = np.vstack(all_probs)
+    all_labels = np.vstack(all_labels)
+
+    if search_global:
+        # Global threshold search
+        best_threshold = 0.5
+        best_f1 = 0.0
+
+        for threshold in np.arange(0.05, 0.61, 0.05):
+            preds = (all_probs > threshold).astype(int)
+            f1 = f1_score(all_labels, preds, average='micro', zero_division=0)
+
+            if f1 > best_f1:
+                best_f1 = f1
+                best_threshold = threshold
+
+        print(f"   Best global threshold: {best_threshold:.2f} (val micro-F1: {best_f1:.4f})")
+        return best_threshold, best_f1
+
+    else:
+        # Per-label threshold search (more expensive)
+        per_label_thresholds = np.full(all_labels.shape[1], 0.5)
+
+        for label_idx in range(all_labels.shape[1]):
+            best_t = 0.5
+            best_f1_label = 0.0
+
+            for t in np.arange(0.05, 0.61, 0.05):
+                preds_label = (all_probs[:, label_idx] > t).astype(int)
+                f1_label = f1_score(all_labels[:, label_idx], preds_label, zero_division=0)
+
+                if f1_label > best_f1_label:
+                    best_f1_label = f1_label
+                    best_t = t
+
+            per_label_thresholds[label_idx] = best_t
+
+        # Compute overall micro-F1 with per-label thresholds
+        preds = np.zeros_like(all_probs)
+        for label_idx in range(all_labels.shape[1]):
+            preds[:, label_idx] = (all_probs[:, label_idx] > per_label_thresholds[label_idx]).astype(int)
+
+        best_f1 = f1_score(all_labels, preds, average='micro', zero_division=0)
+
+        print(f"   Per-label thresholds: median={np.median(per_label_thresholds):.2f}, val micro-F1: {best_f1:.4f}")
+        return per_label_thresholds, best_f1
+
+# ============================================================================
+# EVALUATION
+# ============================================================================
+
+def evaluate_model(model, test_loader, model_name="Model", threshold=0.5, top_k=5):
+    """
+    Comprehensive evaluation with:
+    - Tuned threshold predictions
+    - Top-k predictions
+    - Fixed 0.5 threshold (for reference)
+    """
+    model.eval()
+    all_probs = []
+    all_labels = []
 
     with torch.no_grad():
         for batch in tqdm(test_loader, desc=f"Evaluating {model_name}"):
@@ -382,40 +636,233 @@ def evaluate_model(model, test_loader, model_name="Model"):
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
 
-            start_time = time.time()
-
-            # Handle different model types
-            if hasattr(model, 'forward') and 'attention_mask' in str(model.forward.__code__.co_varnames):
-                logits = model(input_ids, attention_mask)
-            else:
-                logits = model(input_ids)
-
-            inference_times.append(time.time() - start_time)
-
+            logits = model(input_ids, attention_mask)
             probs = torch.sigmoid(logits).cpu().numpy()
-            preds = (probs > 0.5).astype(int)
 
-            all_preds.append(preds)
+            # Shape checks
+            assert probs.shape[1] == 50, f"Expected 50 labels, got {probs.shape[1]}"
+
+            all_probs.append(probs)
             all_labels.append(labels.cpu().numpy())
 
-    all_preds = np.vstack(all_preds)
+    all_probs = np.vstack(all_probs)
     all_labels = np.vstack(all_labels)
 
-    macro_f1 = f1_score(all_labels, all_preds, average='macro', zero_division=0)
-    micro_f1 = f1_score(all_labels, all_preds, average='micro', zero_division=0)
-    per_class_f1 = f1_score(all_labels, all_preds, average=None, zero_division=0)
+    # Diagnostics
+    mean_prob = all_probs.mean()
+    max_prob = all_probs.max()
+    frac_above_05 = (all_probs > 0.5).mean()
 
-    avg_inference_time = np.mean(inference_times) * 1000  # ms
+    print(f"\n   Diagnostics: mean_prob={mean_prob:.4f}, max_prob={max_prob:.4f}, frac>0.5={frac_above_05:.4f}")
 
-    return {
-        'macro_f1': float(macro_f1),
-        'micro_f1': float(micro_f1),
-        'per_class_f1': {code: float(f1) for code, f1 in zip(TOP_50_CODES, per_class_f1)},
-        'avg_inference_time_ms': float(avg_inference_time)
+    # 1. Tuned threshold predictions
+    if isinstance(threshold, np.ndarray):
+        # Per-label thresholds
+        preds_tuned = np.zeros_like(all_probs)
+        for label_idx in range(all_labels.shape[1]):
+            preds_tuned[:, label_idx] = (all_probs[:, label_idx] > threshold[label_idx]).astype(int)
+    else:
+        # Global threshold
+        preds_tuned = (all_probs > threshold).astype(int)
+
+    # 2. Top-k predictions
+    preds_topk = np.zeros_like(all_probs)
+    for i in range(len(all_probs)):
+        top_k_indices = np.argsort(all_probs[i])[-top_k:]
+        preds_topk[i, top_k_indices] = 1
+
+    # 3. Fixed 0.5 threshold
+    preds_05 = (all_probs > 0.5).astype(int)
+
+    # Check for all-zero predictions
+    if preds_tuned.sum() == 0:
+        print(f"   ⚠️  WARNING: All predictions are zero with tuned threshold!")
+    if preds_topk.sum() == 0:
+        print(f"   ⚠️  WARNING: All top-k predictions are zero!")
+
+    # Compute metrics
+    results = {
+        'tuned': {
+            'macro_f1': float(f1_score(all_labels, preds_tuned, average='macro', zero_division=0)),
+            'micro_f1': float(f1_score(all_labels, preds_tuned, average='micro', zero_division=0)),
+            'threshold': threshold if isinstance(threshold, float) else 'per-label'
+        },
+        'topk': {
+            'macro_f1': float(f1_score(all_labels, preds_topk, average='macro', zero_division=0)),
+            'micro_f1': float(f1_score(all_labels, preds_topk, average='micro', zero_division=0)),
+            'k': top_k
+        },
+        'fixed_05': {
+            'macro_f1': float(f1_score(all_labels, preds_05, average='macro', zero_division=0)),
+            'micro_f1': float(f1_score(all_labels, preds_05, average='micro', zero_division=0))
+        }
     }
 
+    return results
+
 # ============================================================================
-# SECTION A: LOAD SHIFAMIND RESULTS (FROM PHASES 1-3)
+# TRAINING FUNCTION
+# ============================================================================
+
+def train_baseline(model, model_name, train_loader, val_loader, config):
+    """
+    Train a baseline model with config-specific settings
+
+    config: {
+        'epochs': int,
+        'lr': float,
+        'patience': int,
+        'batch_size': int,
+        'criterion': str ('bce' or 'bce_weighted'),
+        'grad_clip': float
+    }
+    """
+    print(f"\n🏋️  Training {model_name}...")
+    print(f"   Config: {config}")
+
+    # Setup
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config['lr'], weight_decay=config.get('weight_decay', 0.0))
+
+    if config.get('criterion') == 'bce_weighted':
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor.to(device))
+    else:
+        criterion = nn.BCEWithLogitsLoss()
+
+    best_val_f1 = 0.0
+    patience_counter = 0
+
+    for epoch in range(config['epochs']):
+        model.train()
+        epoch_loss = 0.0
+        epoch_probs = []
+
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config['epochs']}")
+        for batch in pbar:
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            labels = batch['labels'].to(device)
+
+            optimizer.zero_grad()
+
+            # Handle DR-CAML special case
+            if isinstance(model, DR_CAML):
+                logits, reg_loss = model(input_ids, attention_mask, return_reg_loss=True)
+                loss = criterion(logits, labels) + model.lambda_desc * reg_loss
+            else:
+                logits = model(input_ids, attention_mask)
+                loss = criterion(logits, labels)
+
+            loss.backward()
+
+            if config.get('grad_clip'):
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config['grad_clip'])
+
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            epoch_probs.append(torch.sigmoid(logits).detach().cpu().numpy())
+
+            pbar.set_postfix({'loss': loss.item()})
+
+        avg_loss = epoch_loss / len(train_loader)
+        mean_train_prob = np.vstack(epoch_probs).mean()
+
+        print(f"   Epoch {epoch+1}: loss={avg_loss:.4f}, mean_prob={mean_train_prob:.4f}")
+
+        # Validation
+        val_threshold, val_f1 = tune_thresholds(model, val_loader, model_name, search_global=True)
+
+        print(f"   Val F1: {val_f1:.4f} (threshold: {val_threshold:.2f})")
+
+        # Early stopping
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
+            patience_counter = 0
+            # Save checkpoint
+            checkpoint_path = BASELINES_CHECKPOINT_PATH / f'{model_name.lower().replace("-", "_")}_baseline.pt'
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'val_f1': val_f1,
+                'threshold': val_threshold,
+                'epoch': epoch
+            }, checkpoint_path)
+            print(f"   ✅ Saved best model (F1: {val_f1:.4f})")
+        else:
+            patience_counter += 1
+            if patience_counter >= config['patience']:
+                print(f"   Early stopping at epoch {epoch+1}")
+                break
+
+    # Load best model
+    checkpoint_path = BASELINES_CHECKPOINT_PATH / f'{model_name.lower().replace("-", "_")}_baseline.pt'
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint['model_state_dict'])
+
+    return checkpoint['threshold']
+
+# ============================================================================
+# MODEL CONFIGURATIONS
+# ============================================================================
+
+MODEL_CONFIGS = {
+    'CAML': {
+        'epochs': 5,
+        'lr': 1e-3,
+        'patience': 2,
+        'batch_size': 32,
+        'criterion': 'bce_weighted',
+        'grad_clip': 1.0,
+        'weight_decay': 1e-4
+    },
+    'DR-CAML': {
+        'epochs': 5,
+        'lr': 1e-3,
+        'patience': 2,
+        'batch_size': 32,
+        'criterion': 'bce_weighted',
+        'grad_clip': 1.0,
+        'weight_decay': 1e-4
+    },
+    'MultiResCNN': {
+        'epochs': 5,
+        'lr': 1e-3,
+        'patience': 2,
+        'batch_size': 32,
+        'criterion': 'bce_weighted',
+        'grad_clip': 1.0,
+        'weight_decay': 1e-4
+    },
+    'LAAT': {
+        'epochs': 5,
+        'lr': 1e-3,
+        'patience': 2,
+        'batch_size': 16,
+        'criterion': 'bce_weighted',
+        'grad_clip': 1.0,
+        'weight_decay': 1e-4
+    },
+    'PLM-ICD': {
+        'epochs': 3,
+        'lr': 2e-5,
+        'patience': 1,
+        'batch_size': 8,
+        'criterion': 'bce_weighted',
+        'grad_clip': 1.0,
+        'weight_decay': 0.01
+    },
+    'Longformer-ICD': {
+        'epochs': 2,
+        'lr': 1e-5,
+        'patience': 1,
+        'batch_size': 2,
+        'criterion': 'bce_weighted',
+        'grad_clip': 1.0,
+        'weight_decay': 0.01
+    }
+}
+
+# ============================================================================
+# SECTION A: LOAD SHIFAMIND RESULTS
 # ============================================================================
 
 print("\n" + "="*80)
@@ -424,262 +871,197 @@ print("="*80)
 
 ablation_results = {}
 
-# Load Phase 1 results (w/o GraphSAGE)
+# Load Phase 1-3 results
 phase1_results_path = OUTPUT_BASE / 'results' / 'phase1' / 'results.json'
 if phase1_results_path.exists():
     with open(phase1_results_path, 'r') as f:
         phase1_results = json.load(f)
     ablation_results['without_graphsage'] = {
         'macro_f1': phase1_results['diagnosis_metrics']['macro_f1'],
-        'micro_f1': phase1_results['diagnosis_metrics']['micro_f1'],
-        'source': 'Phase 1'
+        'micro_f1': phase1_results['diagnosis_metrics']['micro_f1']
     }
-    print(f"✅ Phase 1 (w/o GraphSAGE): F1 = {ablation_results['without_graphsage']['macro_f1']:.4f}")
+    print(f"✅ Phase 1 (w/o GraphSAGE): Macro-F1 = {ablation_results['without_graphsage']['macro_f1']:.4f}")
 
-# Load Phase 2 results (w/o RAG)
 phase2_results_path = OUTPUT_BASE / 'results' / 'phase2' / 'results.json'
 if phase2_results_path.exists():
     with open(phase2_results_path, 'r') as f:
         phase2_results = json.load(f)
     ablation_results['without_rag'] = {
         'macro_f1': phase2_results['diagnosis_metrics']['macro_f1'],
-        'micro_f1': phase2_results['diagnosis_metrics']['micro_f1'],
-        'source': 'Phase 2'
+        'micro_f1': phase2_results['diagnosis_metrics']['micro_f1']
     }
-    print(f"✅ Phase 2 (w/o RAG): F1 = {ablation_results['without_rag']['macro_f1']:.4f}")
+    print(f"✅ Phase 2 (w/o RAG): Macro-F1 = {ablation_results['without_rag']['macro_f1']:.4f}")
 
-# Load Phase 3 results (Full model)
 phase3_results_path = OUTPUT_BASE / 'results' / 'phase3' / 'results.json'
 if phase3_results_path.exists():
     with open(phase3_results_path, 'r') as f:
         phase3_results = json.load(f)
     ablation_results['full_model'] = {
         'macro_f1': phase3_results['diagnosis_metrics']['macro_f1'],
-        'micro_f1': phase3_results['diagnosis_metrics']['micro_f1'],
-        'source': 'Phase 3'
+        'micro_f1': phase3_results['diagnosis_metrics']['micro_f1']
     }
-    print(f"✅ Phase 3 (Full ShifaMind): F1 = {ablation_results['full_model']['macro_f1']:.4f}")
+    print(f"✅ Phase 3 (Full ShifaMind): Macro-F1 = {ablation_results['full_model']['macro_f1']:.4f}")
 
 # ============================================================================
 # SECTION B: TRAIN & EVALUATE BASELINES
 # ============================================================================
 
 print("\n" + "="*80)
-print("📍 SECTION B: TRAINING SOTA BASELINES (1 EPOCH EACH)")
+print("📍 SECTION B: TRAINING SOTA BASELINES")
 print("="*80)
 
 tokenizer = AutoTokenizer.from_pretrained('emilyalsentzer/Bio_ClinicalBERT')
 
-test_dataset = SimpleDataset(df_test, tokenizer)
-test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
+# Prepare description list for DR-CAML
+desc_list = [ICD_DESCRIPTIONS[code] for code in TOP_50_CODES]
 
 sota_results = {}
-baseline_configs = [
-    ('CAML', CAML(num_labels=len(TOP_50_CODES))),
-    ('DR-CAML', DR_CAML(num_labels=len(TOP_50_CODES))),
-    ('MultiResCNN', MultiResCNN(num_labels=len(TOP_50_CODES))),
-    ('LAAT', LAAT(num_labels=len(TOP_50_CODES))),
-]
 
-# For PLM-ICD and Longformer, use BioClinicalBERT
+# Baseline models
+baseline_models = {
+    'CAML': CAML(num_labels=len(TOP_50_CODES)),
+    'DR-CAML': DR_CAML(num_labels=len(TOP_50_CODES), descriptions=desc_list,
+                       tokenizer=tokenizer, lambda_desc=0.1),
+    'MultiResCNN': MultiResCNN(num_labels=len(TOP_50_CODES)),
+    'LAAT': LAAT(num_labels=len(TOP_50_CODES)),
+}
+
+# Add transformer models
 base_model_plm = AutoModel.from_pretrained('emilyalsentzer/Bio_ClinicalBERT').to(device)
-plm_icd_model = PLM_ICD(base_model_plm, num_labels=len(TOP_50_CODES)).to(device)
-baseline_configs.append(('PLM-ICD', plm_icd_model))
+baseline_models['PLM-ICD'] = PLM_ICD(base_model_plm, num_labels=len(TOP_50_CODES))
 
-base_model_long = AutoModel.from_pretrained('emilyalsentzer/Bio_ClinicalBERT').to(device)
-longformer_model = LongformerICD(base_model_long, num_labels=len(TOP_50_CODES)).to(device)
-baseline_configs.append(('Longformer-ICD', longformer_model))
+baseline_models['Longformer-ICD'] = LongformerICD(num_labels=len(TOP_50_CODES))
 
-print(f"\n🏋️  Training {len(baseline_configs)} baselines (1 epoch each)...")
-print("⚠️  Using 1 epoch for speed - results are directional\n")
+print(f"\n🏋️  Training {len(baseline_models)} baselines with proper configs...")
 
-for baseline_name, baseline_model in baseline_configs:
+for model_name, model in baseline_models.items():
     print(f"\n{'='*70}")
-    print(f"🏆 {baseline_name}")
+    print(f"🏆 {model_name}")
     print(f"{'='*70}")
 
-    baseline_model = baseline_model.to(device)
-    checkpoint_path = BASELINES_CHECKPOINT_PATH / f'{baseline_name.lower().replace("-", "_")}_baseline.pt'
+    model = model.to(device)
+    config = MODEL_CONFIGS[model_name]
 
+    checkpoint_path = BASELINES_CHECKPOINT_PATH / f'{model_name.lower().replace("-", "_")}_baseline.pt'
+
+    # Prepare dataloaders with model-specific batch size
+    train_dataset = SimpleDataset(df_train, tokenizer, max_length=512)
+    val_dataset = SimpleDataset(df_val, tokenizer, max_length=512)
+    test_dataset = SimpleDataset(df_test, tokenizer, max_length=512)
+
+    train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
+
+    # Train or load
     if checkpoint_path.exists():
         print(f"📥 Loading existing checkpoint...")
-        baseline_model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=False))
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+        # Handle old checkpoint format (just state dict) vs new format (dict with keys)
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            tuned_threshold = checkpoint.get('threshold', 0.5)
+        else:
+            # Old format - just state dict, retrain instead
+            print(f"⚠️  Old checkpoint format detected - retraining...")
+            tuned_threshold = train_baseline(model, model_name, train_loader, val_loader, config)
     else:
-        print(f"🏋️  Training {baseline_name} (1 epoch)...")
+        tuned_threshold = train_baseline(model, model_name, train_loader, val_loader, config)
 
-        train_dataset = SimpleDataset(df_train, tokenizer)
-        train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+    # Evaluate on test set
+    results = evaluate_model(model, test_loader, model_name, threshold=tuned_threshold, top_k=TOP_K)
+    sota_results[model_name] = results
 
-        optimizer = torch.optim.AdamW(baseline_model.parameters(), lr=3e-5)
-        criterion = nn.BCEWithLogitsLoss()
+    print(f"\n📊 Test Results for {model_name}:")
+    print(f"   Tuned threshold: Macro-F1={results['tuned']['macro_f1']:.4f}, Micro-F1={results['tuned']['micro_f1']:.4f}")
+    print(f"   Top-{TOP_K}:         Macro-F1={results['topk']['macro_f1']:.4f}, Micro-F1={results['topk']['micro_f1']:.4f}")
+    print(f"   Fixed 0.5:       Macro-F1={results['fixed_05']['macro_f1']:.4f}, Micro-F1={results['fixed_05']['micro_f1']:.4f}")
 
-        baseline_model.train()
-        for batch in tqdm(train_loader, desc=f"Training {baseline_name}"):
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            labels = batch['labels'].to(device)
-
-            optimizer.zero_grad()
-
-            if 'attention_mask' in str(baseline_model.forward.__code__.co_varnames):
-                logits = baseline_model(input_ids, attention_mask)
-            else:
-                logits = baseline_model(input_ids)
-
-            loss = criterion(logits, labels)
-            loss.backward()
-            optimizer.step()
-
-        torch.save(baseline_model.state_dict(), checkpoint_path)
-        print(f"✅ Saved to {checkpoint_path}")
-
-    # Evaluate
-    results = evaluate_model(baseline_model, test_loader, baseline_name)
-    sota_results[baseline_name] = results
-
-    print(f"\n📊 Results:")
-    print(f"   Macro F1: {results['macro_f1']:.4f}")
-    print(f"   Micro F1: {results['micro_f1']:.4f}")
+    # Save individual results
+    with open(RESULTS_PATH / f'baseline_{model_name.lower().replace("-", "_")}.json', 'w') as f:
+        json.dump(results, f, indent=2)
 
     # Cleanup
-    del baseline_model
+    del model
     torch.cuda.empty_cache()
 
 # ============================================================================
-# COMPREHENSIVE COMPARISON TABLE
+# COMPREHENSIVE COMPARISON
 # ============================================================================
 
 print("\n" + "="*80)
-print("📊 COMPREHENSIVE COMPARISON: ALL MODELS (TOP-50)")
+print("📊 COMPREHENSIVE COMPARISON TABLE")
 print("="*80)
 
-comparison_table = {}
+comparison_data = []
 
-# Ablations
-if 'without_graphsage' in ablation_results:
-    comparison_table['ShifaMind w/o GraphSAGE'] = {
-        'macro_f1': ablation_results['without_graphsage']['macro_f1'],
-        'micro_f1': ablation_results['without_graphsage']['micro_f1'],
-        'interpretable': 'Yes',
-        'type': 'Ablation'
-    }
+# ShifaMind ablations
+if 'full_model' in ablation_results:
+    comparison_data.append({
+        'Model': 'ShifaMind (Full)',
+        'Macro-F1': ablation_results['full_model']['macro_f1'],
+        'Micro-F1': ablation_results['full_model']['micro_f1'],
+        'Interpretable': 'Yes',
+        'Type': 'Ours'
+    })
 
 if 'without_rag' in ablation_results:
-    comparison_table['ShifaMind w/o RAG'] = {
-        'macro_f1': ablation_results['without_rag']['macro_f1'],
-        'micro_f1': ablation_results['without_rag']['micro_f1'],
-        'interpretable': 'Yes',
-        'type': 'Ablation'
-    }
+    comparison_data.append({
+        'Model': 'ShifaMind w/o RAG',
+        'Macro-F1': ablation_results['without_rag']['macro_f1'],
+        'Micro-F1': ablation_results['without_rag']['micro_f1'],
+        'Interpretable': 'Yes',
+        'Type': 'Ablation'
+    })
 
-if 'full_model' in ablation_results:
-    comparison_table['ShifaMind (Full)'] = {
-        'macro_f1': ablation_results['full_model']['macro_f1'],
-        'micro_f1': ablation_results['full_model']['micro_f1'],
-        'interpretable': 'Yes',
-        'type': 'Ours'
-    }
+if 'without_graphsage' in ablation_results:
+    comparison_data.append({
+        'Model': 'ShifaMind w/o GraphSAGE',
+        'Macro-F1': ablation_results['without_graphsage']['macro_f1'],
+        'Micro-F1': ablation_results['without_graphsage']['micro_f1'],
+        'Interpretable': 'Yes',
+        'Type': 'Ablation'
+    })
 
-# SOTA Baselines
-for name, results in sota_results.items():
-    comparison_table[name] = {
-        'macro_f1': results['macro_f1'],
-        'micro_f1': results['micro_f1'],
-        'interpretable': 'No',
-        'type': 'SOTA Baseline'
-    }
+# SOTA baselines (use tuned threshold results)
+for model_name, results in sota_results.items():
+    comparison_data.append({
+        'Model': model_name,
+        'Macro-F1': results['tuned']['macro_f1'],
+        'Micro-F1': results['tuned']['micro_f1'],
+        'Interpretable': 'No',
+        'Type': 'SOTA Baseline'
+    })
 
-# Print table
+# Sort by macro-F1
+comparison_df = pd.DataFrame(comparison_data).sort_values('Macro-F1', ascending=False)
+
 print("\n" + "="*95)
 print(f"{'Model':<30} {'Macro-F1':<12} {'Micro-F1':<12} {'Interpretable':<15} {'Type':<15}")
 print("="*95)
-
-for model_name, metrics in sorted(comparison_table.items(), key=lambda x: x[1]['macro_f1'], reverse=True):
-    macro_f1 = metrics['macro_f1']
-    micro_f1 = metrics['micro_f1']
-    interp = metrics['interpretable']
-    model_type = metrics['type']
-
-    print(f"{model_name:<30} {macro_f1:<12.4f} {micro_f1:<12.4f} {interp:<15} {model_type:<15}")
-
+for _, row in comparison_df.iterrows():
+    print(f"{row['Model']:<30} {row['Macro-F1']:<12.4f} {row['Micro-F1']:<12.4f} {row['Interpretable']:<15} {row['Type']:<15}")
 print("="*95)
 
-# ============================================================================
-# SAVE RESULTS
-# ============================================================================
-
-print("\n" + "="*80)
-print("💾 SAVING RESULTS")
-print("="*80)
+# Save
+comparison_df.to_csv(RESULTS_PATH / 'comparison_table.csv', index=False)
 
 final_results = {
     'timestamp': timestamp,
     'run_folder': str(OUTPUT_BASE),
-    'num_diagnoses': len(TOP_50_CODES),
     'ablation_studies': ablation_results,
     'sota_comparison': sota_results,
-    'comparison_table': comparison_table,
-    'key_findings': {
-        'best_overall_f1': max((v['macro_f1'] for v in comparison_table.values())),
-        'best_interpretable_f1': ablation_results.get('full_model', {}).get('macro_f1', 0.0),
-        'num_baselines_evaluated': len(sota_results)
-    }
+    'comparison_table': comparison_data,
+    'top_k': TOP_K
 }
 
 with open(RESULTS_PATH / 'ablation_sota_results.json', 'w') as f:
     json.dump(final_results, f, indent=2)
 
-# Save comparison table as CSV
-comparison_df = pd.DataFrame([
-    {
-        'Model': name,
-        'Macro-F1': metrics['macro_f1'],
-        'Micro-F1': metrics['micro_f1'],
-        'Interpretable': metrics['interpretable'],
-        'Type': metrics['type']
-    }
-    for name, metrics in comparison_table.items()
-]).sort_values('Macro-F1', ascending=False)
-
-comparison_df.to_csv(RESULTS_PATH / 'comparison_table.csv', index=False)
-
-print(f"✅ Results saved to: {RESULTS_PATH / 'ablation_sota_results.json'}")
-print(f"✅ Comparison table saved to: {RESULTS_PATH / 'comparison_table.csv'}")
-
-# ============================================================================
-# SUMMARY
-# ============================================================================
+print(f"\n✅ Results saved to: {RESULTS_PATH}")
 
 print("\n" + "="*80)
 print("✅ SHIFAMIND2 PHASE 5 COMPLETE!")
 print("="*80)
-
-print(f"\n📊 KEY FINDINGS (TOP-50 ICD-10):")
-
-if 'full_model' in ablation_results:
-    full_f1 = ablation_results['full_model']['macro_f1']
-    print(f"\n1. ShifaMind (Full): Macro-F1 = {full_f1:.4f}")
-
-    if 'without_rag' in ablation_results:
-        delta = full_f1 - ablation_results['without_rag']['macro_f1']
-        print(f"   • RAG contribution: {delta:+.4f}")
-
-    if 'without_graphsage' in ablation_results:
-        if 'without_rag' in ablation_results:
-            delta = ablation_results['without_rag']['macro_f1'] - ablation_results['without_graphsage']['macro_f1']
-            print(f"   • GraphSAGE contribution: {delta:+.4f}")
-
-print(f"\n2. SOTA Baselines ({len(sota_results)} models):")
-for name, results in sota_results.items():
-    print(f"   • {name}: Macro-F1 = {results['macro_f1']:.4f}")
-
-print(f"\n3. Performance + Interpretability:")
-print(f"   ✅ ShifaMind achieves competitive F1 WITH full interpretability")
-print(f"   ⚠️  SOTA baselines have similar/higher F1 but NO interpretability")
-
-print(f"\n📁 All results saved to: {OUTPUT_BASE}")
-print(f"\n💡 CONCLUSION:")
-print(f"   ShifaMind successfully balances performance and interpretability for Top-50 multilabel ICD coding.")
-print(f"   All baseline comparisons use SAME Top-50 label space and SAME train/val/test splits.")
-
 print("\nAlhamdulillah! 🤲")
